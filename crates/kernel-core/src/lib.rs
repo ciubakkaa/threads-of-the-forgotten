@@ -1217,6 +1217,13 @@ impl Kernel {
                     .top_pressures
                     .iter()
                     .any(|pressure| pressure == "household_hunger" || pressure == "debt_strain");
+            let rumor_mode = decision
+                .top_intents
+                .iter()
+                .any(|intent| intent == "investigate_rumor")
+                || decision.top_pressures.iter().any(|pressure| {
+                    pressure == "information_rising" || pressure == "information_volatile"
+                });
             if repetitive_streak >= 3 && scarcity_mode && execution.tick % 12 == 0 {
                 let mut ranked = decision.alternatives.clone();
                 ranked.sort_by(|left, right| {
@@ -1226,6 +1233,84 @@ impl Kernel {
                 if let Some(alternative) = ranked
                     .into_iter()
                     .find(|candidate| candidate.action != chosen.action)
+                {
+                    chosen = alternative;
+                }
+            } else if repetitive_streak >= 2 && rumor_mode && execution.tick % 8 == 0 {
+                let mut ranked = decision.alternatives.clone();
+                ranked.sort_by(|left, right| {
+                    (right.priority, right.score, &right.action)
+                        .cmp(&(left.priority, left.score, &left.action))
+                });
+                if let Some(alternative) = ranked.into_iter().find(|candidate| {
+                    candidate.action != chosen.action
+                        && matches!(
+                            candidate.action.as_str(),
+                            "share_rumor"
+                                | "question_travelers"
+                                | "investigate_rumor"
+                                | "mediate_dispute"
+                                | "trade_visit"
+                        )
+                }) {
+                    chosen = alternative;
+                }
+            } else if repetitive_streak >= 3 && execution.tick % 10 == 0 {
+                let mut ranked = decision.alternatives.clone();
+                ranked.sort_by(|left, right| {
+                    (right.priority, right.score, &right.action)
+                        .cmp(&(left.priority, left.score, &left.action))
+                });
+                if let Some(alternative) = ranked
+                    .into_iter()
+                    .find(|candidate| candidate.action != chosen.action)
+                {
+                    chosen = alternative;
+                }
+            } else if execution.tick % 72 == 0 {
+                let mut ranked = decision.alternatives.clone();
+                ranked.sort_by(|left, right| {
+                    (right.priority, right.score, &right.action)
+                        .cmp(&(left.priority, left.score, &left.action))
+                });
+                let exploration_targets = [
+                    "craft_goods",
+                    "tend_fields",
+                    "work_for_food",
+                    "forage",
+                    "question_travelers",
+                    "mediate_dispute",
+                    "trade_visit",
+                ];
+                let target_idx = (self.deterministic_stream(
+                    execution.tick,
+                    Phase::ActionResolution,
+                    &decision.npc_id,
+                    "exploration_target",
+                ) % exploration_targets.len() as u64) as usize;
+                let target_action = exploration_targets[target_idx];
+                if let Some(alternative) = ranked
+                    .iter()
+                    .find(|candidate| {
+                        candidate.action != chosen.action
+                            && candidate.action.as_str() == target_action
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        ranked.into_iter().find(|candidate| {
+                            candidate.action != chosen.action
+                                && matches!(
+                                    candidate.action.as_str(),
+                                    "craft_goods"
+                                        | "tend_fields"
+                                        | "work_for_food"
+                                        | "forage"
+                                        | "question_travelers"
+                                        | "mediate_dispute"
+                                        | "trade_visit"
+                                )
+                        })
+                    })
                 {
                     chosen = alternative;
                 }
@@ -4690,15 +4775,41 @@ impl Kernel {
                     .iter()
                     .find(|packet| packet.reason_packet_id == *reason_id)
             });
+        let chosen_action = action_event
+            .details
+            .as_ref()
+            .and_then(|details| details.get("chosen_action"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown_action");
         let motive_chain = reason
             .map(|packet| {
-                if packet.why_chain.is_empty() {
+                let mut chain = if packet.why_chain.is_empty() {
                     packet.top_intents.clone()
                 } else {
                     packet.why_chain.clone()
+                };
+                chain.retain(|step| {
+                    step != "maintain_routine"
+                        && step != "intent::maintain_routine"
+                        && !step.starts_with("belief::season_cycle_tick_")
+                });
+                if chain.is_empty() {
+                    if let Some(pressure) = packet.top_pressures.first() {
+                        chain.push(format!("pressure::{pressure}"));
+                    }
+                    if let Some(intent) =
+                        packet.top_intents.iter().find(|intent| intent.as_str() != "maintain_routine")
+                    {
+                        chain.push(format!("intent::{intent}"));
+                    }
                 }
+                if chain.is_empty() {
+                    chain.push(format!("verb::{chosen_action}"));
+                }
+                chain.truncate(3);
+                chain
             })
-            .unwrap_or_else(|| vec!["maintain_routine".to_string()]);
+            .unwrap_or_else(|| vec![format!("verb::{chosen_action}")]);
         let failed_alternatives = reason
             .map(|packet| {
                 packet
@@ -4710,12 +4821,6 @@ impl Kernel {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let chosen_action = action_event
-            .details
-            .as_ref()
-            .and_then(|details| details.get("chosen_action"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown_action");
         let local_case_load = self
             .law_case_load_by_settlement
             .get(&action_event.location_id)
@@ -4750,17 +4855,7 @@ impl Kernel {
             "local stress intensified after constrained choices".to_string()
         };
         let failed_alternatives = if failed_alternatives.is_empty() {
-            reason
-                .map(|packet| {
-                    packet
-                        .top_pressures
-                        .iter()
-                        .take(2)
-                        .map(|pressure| format!("pressure_response::{pressure}"))
-                        .collect::<Vec<_>>()
-                })
-                .filter(|alternatives| !alternatives.is_empty())
-                .unwrap_or_else(|| vec!["insufficient_viable_alternatives".to_string()])
+            narrative_default_alternatives(chosen_action)
         } else {
             failed_alternatives
         };
@@ -5746,7 +5841,7 @@ where
     {
         base.push(candidate(
             AffordanceVerb::InvestigateRumor,
-            3,
+            4,
             1,
             tick,
             npc_id,
@@ -5823,8 +5918,24 @@ where
     if rumor_heat >= 2 {
         base.push(candidate(
             AffordanceVerb::QuestionTravelers,
-            2,
+            3,
             1,
+            tick,
+            npc_id,
+            &stream,
+        ));
+        base.push(candidate(
+            AffordanceVerb::ShareRumor,
+            4,
+            1,
+            tick,
+            npc_id,
+            &stream,
+        ));
+        base.push(candidate(
+            AffordanceVerb::MediateDispute,
+            2,
+            -1,
             tick,
             npc_id,
             &stream,
@@ -6565,6 +6676,17 @@ fn cadence_interval_ticks(cadence: ContractCadence) -> u64 {
         ContractCadence::Daily => 24,
         ContractCadence::Weekly => 24 * 7,
         ContractCadence::Monthly => 24 * 30,
+    }
+}
+
+fn narrative_default_alternatives(chosen_action: &str) -> Vec<String> {
+    match chosen_action {
+        "assist_neighbor" => vec!["work_for_coin".to_string(), "trade_visit".to_string()],
+        "work_for_coin" => vec!["craft_goods".to_string(), "tend_fields".to_string()],
+        "pay_rent" => vec!["work_for_coin".to_string(), "work_for_food".to_string()],
+        "seek_shelter" => vec!["work_for_food".to_string(), "trade_visit".to_string()],
+        "spread_accusation" => vec!["mediate_dispute".to_string(), "share_rumor".to_string()],
+        _ => vec!["evaluate_other_options".to_string(), "delay_action".to_string()],
     }
 }
 
