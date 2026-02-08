@@ -1,0 +1,13 @@
+[package]
+name = "kernel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "kernel_core"
+path = "src/lib.rs"
+
+[dependencies]
+contracts = { path = "../contracts" }
+serde_json = "1"

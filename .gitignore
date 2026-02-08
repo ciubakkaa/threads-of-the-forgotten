@@ -1,0 +1,13 @@
+# Rust
+/target
+Cargo.lock
+
+# Node
+node_modules/
+observatory-web/node_modules/
+observatory-web/dist/
+
+# MacOS
+.DS_Store
+*.sqlite*
+plans
