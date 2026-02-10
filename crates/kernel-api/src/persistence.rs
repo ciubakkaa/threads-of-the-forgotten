@@ -23,6 +23,7 @@ pub enum PersistenceError {
     Sqlite(rusqlite::Error),
     Serde(serde_json::Error),
     NotAttached,
+    RunAlreadyExists(String),
 }
 
 impl fmt::Display for PersistenceError {
@@ -31,6 +32,9 @@ impl fmt::Display for PersistenceError {
             Self::Sqlite(err) => write!(f, "sqlite error: {err}"),
             Self::Serde(err) => write!(f, "serde error: {err}"),
             Self::NotAttached => write!(f, "sqlite store is not attached"),
+            Self::RunAlreadyExists(run_id) => {
+                write!(f, "run already exists: run_id={run_id}")
+            }
         }
     }
 }
@@ -271,6 +275,29 @@ impl SqliteRunStore {
         let events = self.load_events_range(run_id, from_tick, tick)?;
 
         Ok(ReplaySlice { snapshot, events })
+    }
+
+    pub fn run_exists(&self, run_id: &str) -> Result<bool, PersistenceError> {
+        let row: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM runs WHERE run_id = ?1 LIMIT 1",
+                params![run_id],
+                |result| result.get(0),
+            )
+            .optional()?;
+        Ok(row.is_some())
+    }
+
+    pub fn delete_run(&mut self, run_id: &str) -> Result<(), PersistenceError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM commands WHERE run_id = ?1", params![run_id])?;
+        tx.execute("DELETE FROM events WHERE run_id = ?1", params![run_id])?;
+        tx.execute("DELETE FROM reason_packets WHERE run_id = ?1", params![run_id])?;
+        tx.execute("DELETE FROM snapshots WHERE run_id = ?1", params![run_id])?;
+        tx.execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn configure(&mut self) -> Result<(), PersistenceError> {

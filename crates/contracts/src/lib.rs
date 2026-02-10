@@ -30,6 +30,10 @@ pub struct RunConfig {
     pub duration_days: u32,
     pub region_id: RegionId,
     pub snapshot_every_ticks: u64,
+    #[serde(default = "default_npc_count_min")]
+    pub npc_count_min: u16,
+    #[serde(default = "default_npc_count_max")]
+    pub npc_count_max: u16,
     #[serde(default)]
     pub enabled_systems: BTreeMap<String, bool>,
     #[serde(default)]
@@ -40,6 +44,12 @@ pub struct RunConfig {
 impl RunConfig {
     pub fn max_ticks(&self) -> u64 {
         u64::from(self.duration_days) * TICKS_PER_DAY
+    }
+
+    pub fn normalized_npc_bounds(&self) -> (u16, u16) {
+        let min = self.npc_count_min.max(1);
+        let max = self.npc_count_max.max(min);
+        (min, max)
     }
 }
 
@@ -52,11 +62,21 @@ impl Default for RunConfig {
             duration_days: 30,
             region_id: RegionId::Crownvale,
             snapshot_every_ticks: TICKS_PER_DAY,
+            npc_count_min: default_npc_count_min(),
+            npc_count_max: default_npc_count_max(),
             enabled_systems: BTreeMap::new(),
             scenario_flags: BTreeMap::new(),
             notes: None,
         }
     }
+}
+
+fn default_npc_count_min() -> u16 {
+    60
+}
+
+fn default_npc_count_max() -> u16 {
+    90
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -281,6 +301,11 @@ pub enum AffordanceVerb {
     ShareRumor,
     PatrolRoad,
     AssistNeighbor,
+    ConverseNeighbor,
+    LendCoin,
+    CourtRomance,
+    SeekTreatment,
+    ObserveNotableEvent,
     Forage,
     StealSupplies,
     InvestigateRumor,
@@ -314,6 +339,11 @@ impl AffordanceVerb {
             Self::ShareRumor => "share_rumor",
             Self::PatrolRoad => "patrol_road",
             Self::AssistNeighbor => "assist_neighbor",
+            Self::ConverseNeighbor => "converse_neighbor",
+            Self::LendCoin => "lend_coin",
+            Self::CourtRomance => "court_romance",
+            Self::SeekTreatment => "seek_treatment",
+            Self::ObserveNotableEvent => "observe_notable_event",
             Self::Forage => "forage",
             Self::StealSupplies => "steal_supplies",
             Self::InvestigateRumor => "investigate_rumor",
@@ -385,6 +415,14 @@ pub struct NpcHouseholdLedgerSnapshot {
     pub food_reserve_days: i64,
     pub shelter_status: ShelterStatus,
     pub dependents_count: u8,
+    #[serde(default)]
+    pub profession: String,
+    #[serde(default)]
+    pub aspiration: String,
+    #[serde(default)]
+    pub health: i64,
+    #[serde(default)]
+    pub illness_ticks: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -527,6 +565,80 @@ pub struct NarrativeWhyChainSummary {
     pub social_consequence: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpportunityState {
+    pub opportunity_id: String,
+    pub npc_id: String,
+    pub location_id: String,
+    pub action: String,
+    pub source: String,
+    pub opened_tick: u64,
+    pub expires_tick: u64,
+    pub utility_hint: i64,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitmentState {
+    pub commitment_id: String,
+    pub npc_id: String,
+    pub action_family: String,
+    pub started_tick: u64,
+    pub due_tick: u64,
+    pub cadence_ticks: u64,
+    pub progress_ticks: u64,
+    pub inertia_score: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TimeBudgetState {
+    pub npc_id: String,
+    pub tick: u64,
+    pub sleep_hours: i64,
+    pub work_hours: i64,
+    pub care_hours: i64,
+    pub travel_hours: i64,
+    pub social_hours: i64,
+    pub recovery_hours: i64,
+    pub free_hours: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketClearingState {
+    pub settlement_id: String,
+    pub staples_price_index: i64,
+    pub fuel_price_index: i64,
+    pub medicine_price_index: i64,
+    pub wage_pressure: i64,
+    pub shortage_score: i64,
+    pub unmet_demand: i64,
+    pub cleared_tick: u64,
+    pub market_cleared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountingTransferState {
+    pub transfer_id: String,
+    pub tick: u64,
+    pub settlement_id: String,
+    pub from_account: String,
+    pub to_account: String,
+    pub resource_kind: String,
+    pub amount: i64,
+    pub cause_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstitutionQueueState {
+    pub settlement_id: String,
+    pub pending_cases: i64,
+    pub processed_cases: i64,
+    pub dropped_cases: i64,
+    pub avg_response_latency: i64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
@@ -548,6 +660,7 @@ pub enum EventType {
     PressureEconomyUpdated,
     HouseholdConsumptionApplied,
     RentDue,
+    RentPaid,
     RentUnpaid,
     EvictionRiskChanged,
     HouseholdBufferExhausted,
@@ -579,11 +692,34 @@ pub enum EventType {
     GroupMembershipChanged,
     GroupSplit,
     GroupDissolved,
+    ConversationHeld,
+    LoanExtended,
+    RomanceAdvanced,
+    IllnessContracted,
+    IllnessRecovered,
+    ObservationLogged,
+    InsultExchanged,
+    PunchThrown,
+    BrawlStarted,
+    BrawlStopped,
+    GuardsDispatched,
     ApprenticeshipProgressed,
     SuccessionTransferred,
     RouteRiskUpdated,
     TravelWindowShifted,
     NarrativeWhySummary,
+    OpportunityOpened,
+    OpportunityExpired,
+    OpportunityAccepted,
+    OpportunityRejected,
+    CommitmentStarted,
+    CommitmentContinued,
+    CommitmentCompleted,
+    CommitmentBroken,
+    MarketCleared,
+    MarketFailed,
+    AccountingTransferRecorded,
+    InstitutionQueueUpdated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

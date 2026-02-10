@@ -24,6 +24,10 @@ Milestone 0 scaffold for the vertical-slice kernel + observatory stack.
   - `cargo run -p kernel-cli -- serve`
 - Run tests:
   - `scripts/test.sh`
+- Run a full 720-tick simulation and inspect all outcomes:
+  - `scripts/run-and-inspect.sh <run_id> <seed>`
+  - Example: `scripts/run-and-inspect.sh test_auto 1337`
+  - Produces a report in `/tmp/<run_id>_inspection.md` plus metrics report.
 - Start frontend dev server:
   - `yarn --cwd observatory-web install`
   - `yarn --cwd observatory-web dev`

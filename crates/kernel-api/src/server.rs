@@ -118,6 +118,14 @@ impl HttpApiError {
             PersistenceError::NotAttached => {
                 Self::invalid_query("persistence store is not attached", None)
             }
+            PersistenceError::RunAlreadyExists(run_id) => Self {
+                status: StatusCode::CONFLICT,
+                error: ApiError::new(
+                    ErrorCode::RunStateConflict,
+                    "run_id already exists; pass replace_existing=true to replace",
+                    Some(format!("run_id={run_id}")),
+                ),
+            },
             other => Self::internal("persistence operation failed", Some(other.to_string())),
         }
     }
@@ -212,6 +220,7 @@ struct CreateRunOptions {
     config: RunConfig,
     auto_start: Option<bool>,
     sqlite_path: Option<String>,
+    replace_existing: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -227,8 +236,8 @@ async fn create_run(
     State(state): State<AppState>,
     Json(request): Json<CreateRunRequest>,
 ) -> Result<Json<CreateRunResponse>, HttpApiError> {
-    let (config, auto_start, sqlite_path) = match request {
-        CreateRunRequest::Config(config) => (config, false, Some(default_sqlite_path())),
+    let (config, auto_start, sqlite_path, replace_existing) = match request {
+        CreateRunRequest::Config(config) => (config, false, Some(default_sqlite_path()), true),
         CreateRunRequest::WithOptions(options) => (
             options.config,
             options.auto_start.unwrap_or(false),
@@ -238,6 +247,7 @@ async fn create_run(
                     .filter(|path| !path.trim().is_empty())
                     .unwrap_or_else(default_sqlite_path),
             ),
+            options.replace_existing.unwrap_or(true),
         ),
     };
 
@@ -249,6 +259,9 @@ async fn create_run(
         if let Some(path) = sqlite_path {
             engine
                 .attach_sqlite_store(path)
+                .map_err(HttpApiError::from_persistence)?;
+            engine
+                .initialize_run_storage(replace_existing)
                 .map_err(HttpApiError::from_persistence)?;
         }
 
@@ -899,6 +912,57 @@ async fn get_npc_inspector(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let opportunities = snapshot
+            .region_state
+            .get("opportunities")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("npc_id")
+                            .and_then(Value::as_str)
+                            .map(|value| value == npc_id)
+                            .unwrap_or(false)
+                    })
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let commitments = snapshot
+            .region_state
+            .get("commitments")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("npc_id")
+                            .and_then(Value::as_str)
+                            .map(|value| value == npc_id)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let time_budget = snapshot
+            .region_state
+            .get("time_budgets")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("npc_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == npc_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned();
         let why_summaries = snapshot
             .region_state
             .get("narrative_summaries")
@@ -940,6 +1004,9 @@ async fn get_npc_inspector(
                 "contract_status": contract_status,
                 "relationship_edges": relationship_edges,
                 "active_beliefs": active_beliefs,
+                "opportunities": opportunities,
+                "commitments": commitments,
+                "time_budget": time_budget,
                 "motive_chain": motive_chain,
                 "why_summaries": why_summaries,
                 "key_relationships": relationship_edges.clone(),
@@ -1177,6 +1244,55 @@ async fn get_settlement_inspector(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let market_clearing = snapshot
+            .region_state
+            .get("market_clearing")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("settlement_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == settlement_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let institution_queue = snapshot
+            .region_state
+            .get("institution_queue")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("settlement_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == settlement_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let accounting_transfers = snapshot
+            .region_state
+            .get("accounting_transfers")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("settlement_id")
+                            .and_then(Value::as_str)
+                            .map(|value| value == settlement_id)
+                            .unwrap_or(false)
+                    })
+                    .take(20)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         QueryResponse {
             schema_version: SCHEMA_VERSION_V1.to_string(),
@@ -1207,6 +1323,9 @@ async fn get_settlement_inspector(
                 "production_nodes": production_nodes,
                 "groups": groups,
                 "routes": routes,
+                "market_clearing": market_clearing,
+                "institution_queue": institution_queue,
+                "accounting_transfers": accounting_transfers,
                 "notable_events": recent_events.into_iter().rev().take(20).collect::<Vec<_>>(),
             }),
         }
@@ -1240,7 +1359,7 @@ async fn get_snapshots(
                 Err(other) => return Err(HttpApiError::from_persistence(other)),
             }
         } else {
-            let from_tick = query.from_tick.unwrap_or(1);
+            let from_tick = query.from_tick.unwrap_or(0);
             let to_tick = query.to_tick.unwrap_or(engine.status().current_tick);
 
             if to_tick < from_tick {
@@ -1434,11 +1553,23 @@ fn fallback_snapshot_window(
     to_tick: Option<u64>,
 ) -> Vec<Snapshot> {
     let current_tick = engine.status().current_tick;
-    if current_tick == 0 {
-        return Vec::new();
-    }
-
     let snapshot = engine.snapshot_for_current_tick();
+    if current_tick == 0 {
+        if let Some(around) = around_tick {
+            return if around >= snapshot.tick {
+                vec![snapshot]
+            } else {
+                Vec::new()
+            };
+        }
+        let from = from_tick.unwrap_or(0);
+        let to = to_tick.unwrap_or(snapshot.tick);
+        return if snapshot.tick >= from && snapshot.tick <= to {
+            vec![snapshot]
+        } else {
+            Vec::new()
+        };
+    }
 
     if let Some(around) = around_tick {
         if around >= snapshot.tick {
@@ -1559,6 +1690,17 @@ fn parse_event_type_filter(
             }
             "group_split" | "groupsplit" => EventType::GroupSplit,
             "group_dissolved" | "groupdissolved" => EventType::GroupDissolved,
+            "conversation_held" | "conversationheld" => EventType::ConversationHeld,
+            "loan_extended" | "loanextended" => EventType::LoanExtended,
+            "romance_advanced" | "romanceadvanced" => EventType::RomanceAdvanced,
+            "illness_contracted" | "illnesscontracted" => EventType::IllnessContracted,
+            "illness_recovered" | "illnessrecovered" => EventType::IllnessRecovered,
+            "observation_logged" | "observationlogged" => EventType::ObservationLogged,
+            "insult_exchanged" | "insultexchanged" => EventType::InsultExchanged,
+            "punch_thrown" | "punchthrown" => EventType::PunchThrown,
+            "brawl_started" | "brawlstarted" => EventType::BrawlStarted,
+            "brawl_stopped" | "brawlstopped" => EventType::BrawlStopped,
+            "guards_dispatched" | "guardsdispatched" => EventType::GuardsDispatched,
             "apprenticeship_progressed" | "apprenticeshipprogressed" => {
                 EventType::ApprenticeshipProgressed
             }
@@ -1566,6 +1708,22 @@ fn parse_event_type_filter(
             "route_risk_updated" | "routeriskupdated" => EventType::RouteRiskUpdated,
             "travel_window_shifted" | "travelwindowshifted" => EventType::TravelWindowShifted,
             "narrative_why_summary" | "narrativewhysummary" => EventType::NarrativeWhySummary,
+            "opportunity_opened" | "opportunityopened" => EventType::OpportunityOpened,
+            "opportunity_expired" | "opportunityexpired" => EventType::OpportunityExpired,
+            "opportunity_accepted" | "opportunityaccepted" => EventType::OpportunityAccepted,
+            "opportunity_rejected" | "opportunityrejected" => EventType::OpportunityRejected,
+            "commitment_started" | "commitmentstarted" => EventType::CommitmentStarted,
+            "commitment_continued" | "commitmentcontinued" => EventType::CommitmentContinued,
+            "commitment_completed" | "commitmentcompleted" => EventType::CommitmentCompleted,
+            "commitment_broken" | "commitmentbroken" => EventType::CommitmentBroken,
+            "market_cleared" | "marketcleared" => EventType::MarketCleared,
+            "market_failed" | "marketfailed" => EventType::MarketFailed,
+            "accounting_transfer_recorded" | "accountingtransferrecorded" => {
+                EventType::AccountingTransferRecorded
+            }
+            "institution_queue_updated" | "institutionqueueupdated" => {
+                EventType::InstitutionQueueUpdated
+            }
             _ => {
                 return Err(HttpApiError::invalid_query(
                     "invalid event type filter",
@@ -1734,6 +1892,8 @@ mod tests {
     #[test]
     fn trace_builder_walks_causal_chain() {
         let mut config = RunConfig::default();
+        config.npc_count_min = 3;
+        config.npc_count_max = 3;
         config.snapshot_every_ticks = 2;
 
         let mut engine = EngineApi::from_config(config.clone());

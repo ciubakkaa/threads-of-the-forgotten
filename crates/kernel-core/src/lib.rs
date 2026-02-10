@@ -4,13 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use contracts::{
-    ActorRef, AffordanceVerb, BeliefClaimState, BeliefSource, Command, CommandPayload,
-    ContractCadence, ContractCompensationType, EmploymentContractRecord, Event, EventType,
-    FeasibilityCheck, GroupEntityState, HouseholdLedgerSnapshot, InstitutionProfileState,
+    AccountingTransferState, ActorRef, AffordanceVerb, BeliefClaimState, BeliefSource, Command,
+    CommandPayload, CommitmentState, ContractCadence, ContractCompensationType,
+    EmploymentContractRecord, Event, EventType, FeasibilityCheck, GroupEntityState,
+    HouseholdLedgerSnapshot, InstitutionProfileState, InstitutionQueueState, MarketClearingState,
     MobilityRouteState, MotiveFamily, NarrativeWhyChainSummary, NpcHouseholdLedgerSnapshot,
-    ProductionNodeState, ReasonPacket, RelationshipEdgeState, RunConfig, RunMode, RunStatus,
-    SettlementLaborMarketSnapshot, SettlementStockLedger, ShelterStatus, Snapshot, TrustLevel,
-    SCHEMA_VERSION_V1,
+    OpportunityState, ProductionNodeState, ReasonPacket, RelationshipEdgeState, RunConfig, RunMode,
+    RunStatus, SettlementLaborMarketSnapshot, SettlementStockLedger, ShelterStatus, Snapshot,
+    TimeBudgetState, TrustLevel, SCHEMA_VERSION_V1,
 };
 use serde_json::{json, Value};
 
@@ -50,6 +51,11 @@ pub struct QueuedCommand {
 struct NpcAgent {
     npc_id: String,
     location_id: String,
+    profession: String,
+    aspiration: String,
+    social_class: String,
+    temperament: String,
+    hobbies: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +105,8 @@ struct NpcEconomyState {
     dependents_count: u8,
     apprenticeship_progress: i64,
     employer_contract_id: Option<String>,
+    health: i64,
+    illness_ticks: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +117,36 @@ struct NpcTraitProfile {
     ambition: i64,
     empathy: i64,
     resilience: i64,
+    aggression: i64,
+    patience: i64,
+    honor: i64,
+    generosity: i64,
+    romance_drive: i64,
+    gossip_drive: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ObservationRuntime {
+    tick: u64,
+    location_id: String,
+    topic: String,
+    salience: i64,
+    source_event_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PairTensionState {
+    anger: i64,
+    losses: i64,
+    coin_lost: i64,
+    last_tick: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PairEventMemory {
+    last_conflict_tick: u64,
+    last_romance_tick: u64,
+    last_social_tick: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +269,79 @@ struct NarrativeSummaryRuntime {
     social_consequence: String,
 }
 
+#[derive(Debug, Clone)]
+struct OpportunityRuntimeState {
+    opportunity_id: String,
+    npc_id: String,
+    location_id: String,
+    action: String,
+    source: String,
+    opened_tick: u64,
+    expires_tick: u64,
+    utility_hint: i64,
+    constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CommitmentRuntimeState {
+    commitment_id: String,
+    npc_id: String,
+    action_family: String,
+    started_tick: u64,
+    due_tick: u64,
+    cadence_ticks: u64,
+    progress_ticks: u64,
+    inertia_score: i64,
+    status: String,
+}
+
+#[derive(Debug, Clone)]
+struct TimeBudgetRuntimeState {
+    npc_id: String,
+    tick: u64,
+    sleep_hours: i64,
+    work_hours: i64,
+    care_hours: i64,
+    travel_hours: i64,
+    social_hours: i64,
+    recovery_hours: i64,
+    free_hours: i64,
+}
+
+#[derive(Debug, Clone)]
+struct MarketClearingRuntimeState {
+    settlement_id: String,
+    staples_price_index: i64,
+    fuel_price_index: i64,
+    medicine_price_index: i64,
+    wage_pressure: i64,
+    shortage_score: i64,
+    unmet_demand: i64,
+    cleared_tick: u64,
+    market_cleared: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AccountingTransferRuntimeState {
+    transfer_id: String,
+    tick: u64,
+    settlement_id: String,
+    from_account: String,
+    to_account: String,
+    resource_kind: String,
+    amount: i64,
+    cause_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InstitutionQueueRuntimeState {
+    settlement_id: String,
+    pending_cases: i64,
+    processed_cases: i64,
+    dropped_cases: i64,
+    avg_response_latency: i64,
+}
+
 #[derive(Debug)]
 pub struct Kernel {
     config: RunConfig,
@@ -260,6 +371,18 @@ pub struct Kernel {
     groups_by_id: BTreeMap<String, GroupRuntimeState>,
     routes_by_id: BTreeMap<String, MobilityRouteRuntimeState>,
     narrative_summaries: Vec<NarrativeSummaryRuntime>,
+    opportunities_by_npc: BTreeMap<String, Vec<OpportunityRuntimeState>>,
+    commitments_by_npc: BTreeMap<String, CommitmentRuntimeState>,
+    time_budget_by_npc: BTreeMap<String, TimeBudgetRuntimeState>,
+    market_clearing_by_settlement: BTreeMap<String, MarketClearingRuntimeState>,
+    accounting_transfers: Vec<AccountingTransferRuntimeState>,
+    institution_queue_by_settlement: BTreeMap<String, InstitutionQueueRuntimeState>,
+    observations_by_npc: BTreeMap<String, Vec<ObservationRuntime>>,
+    tension_by_pair: BTreeMap<(String, String), PairTensionState>,
+    pair_event_memory: BTreeMap<(String, String), PairEventMemory>,
+    last_bandit_raid_tick_by_settlement: BTreeMap<String, u64>,
+    settlement_conflict_cooldown_until: BTreeMap<String, u64>,
+    last_social_channel_tick: BTreeMap<String, u64>,
     social_cohesion: i64,
     state_hash: u64,
     last_tick_terminal_event_id: Option<String>,
@@ -292,6 +415,7 @@ struct TickExecution {
     social_graph_pressure: i64,
     mobility_pressure: i64,
     pressure_delta: i64,
+    opportunities_by_npc: BTreeMap<String, Vec<OpportunityRuntimeState>>,
 }
 
 #[derive(Debug)]
@@ -336,6 +460,7 @@ struct NpcDecision {
     top_intents: Vec<String>,
     top_beliefs: Vec<String>,
     top_pressures: Vec<String>,
+    opportunities: Vec<OpportunityRuntimeState>,
     alternatives: Vec<ActionCandidate>,
     chosen_action: Option<ActionCandidate>,
 }
@@ -377,24 +502,31 @@ impl Kernel {
             queue_depth: 0,
         };
 
-        let npcs = default_npcs();
-        let mut npc_economy_by_id = default_npc_economy(&npcs);
+        let npcs = default_npcs(
+            config.seed,
+            config.npc_count_min,
+            config.npc_count_max,
+        );
+        let mut npc_economy_by_id = default_npc_economy(&npcs, config.seed);
         let npc_traits_by_id = default_npc_traits(&npcs);
-        let households_by_id = default_households(&npcs);
-        let contracts_by_id = default_contracts(&npcs);
+        let households_by_id = default_households(&npcs, config.seed);
+        let contracts_by_id = default_contracts(&npcs, config.seed);
         for (contract_id, state) in &contracts_by_id {
             if let Some(economy) = npc_economy_by_id.get_mut(&state.contract.worker_id) {
                 economy.employer_contract_id = Some(contract_id.clone());
             }
         }
-        let labor_market_by_settlement = default_labor_markets();
-        let stock_by_settlement = default_stock_ledgers();
-        let production_nodes_by_id = default_production_nodes();
+        let labor_market_by_settlement = default_labor_markets(&npcs, config.seed);
+        let stock_by_settlement = default_stock_ledgers(&npcs, config.seed);
+        let production_nodes_by_id = default_production_nodes(&npcs, config.seed);
         let relationship_edges = default_relationship_edges(&npcs);
         let beliefs_by_npc = default_beliefs(&npcs);
-        let institutions_by_settlement = default_institutions();
-        let groups_by_id = default_groups(&npcs);
+        let institutions_by_settlement = default_institutions(&npcs, config.seed);
+        let groups_by_id = default_groups(&npcs, config.seed);
         let routes_by_id = default_routes();
+        let market_clearing_by_settlement = default_market_clearing(&npcs);
+        let institution_queue_by_settlement = default_institution_queue(&npcs);
+        let item_registry = default_items(&npcs, config.seed);
 
         Self {
             config,
@@ -409,7 +541,7 @@ impl Kernel {
             scenario_state: ScenarioState::default(),
             law_case_load_by_settlement: BTreeMap::new(),
             wanted_npcs: BTreeSet::new(),
-            item_registry: default_items(),
+            item_registry,
             action_memory_by_npc: BTreeMap::new(),
             npc_economy_by_id,
             npc_traits_by_id,
@@ -424,6 +556,18 @@ impl Kernel {
             groups_by_id,
             routes_by_id,
             narrative_summaries: Vec::new(),
+            opportunities_by_npc: BTreeMap::new(),
+            commitments_by_npc: BTreeMap::new(),
+            time_budget_by_npc: BTreeMap::new(),
+            market_clearing_by_settlement,
+            accounting_transfers: Vec::new(),
+            institution_queue_by_settlement,
+            observations_by_npc: BTreeMap::new(),
+            tension_by_pair: BTreeMap::new(),
+            pair_event_memory: BTreeMap::new(),
+            last_bandit_raid_tick_by_settlement: BTreeMap::new(),
+            settlement_conflict_cooldown_until: BTreeMap::new(),
+            last_social_channel_tick: BTreeMap::new(),
             social_cohesion: 0,
             state_hash: 0,
             last_tick_terminal_event_id: None,
@@ -495,6 +639,20 @@ impl Kernel {
                 food_reserve_days: economy.food_reserve_days,
                 shelter_status: economy.shelter_status,
                 dependents_count: economy.dependents_count,
+                profession: self
+                    .npcs
+                    .iter()
+                    .find(|npc| npc.npc_id == *npc_id)
+                    .map(|npc| npc.profession.clone())
+                    .unwrap_or_else(|| "laborer".to_string()),
+                aspiration: self
+                    .npcs
+                    .iter()
+                    .find(|npc| npc.npc_id == *npc_id)
+                    .map(|npc| npc.aspiration.clone())
+                    .unwrap_or_else(|| "stability".to_string()),
+                health: economy.health,
+                illness_ticks: economy.illness_ticks,
             })
             .collect::<Vec<_>>();
         let household_ledgers = self
@@ -641,6 +799,95 @@ impl Kernel {
                 social_consequence: entry.social_consequence,
             })
             .collect::<Vec<_>>();
+        let opportunities = self
+            .opportunities_by_npc
+            .values()
+            .flat_map(|entries| entries.iter())
+            .map(|entry| OpportunityState {
+                opportunity_id: entry.opportunity_id.clone(),
+                npc_id: entry.npc_id.clone(),
+                location_id: entry.location_id.clone(),
+                action: entry.action.clone(),
+                source: entry.source.clone(),
+                opened_tick: entry.opened_tick,
+                expires_tick: entry.expires_tick,
+                utility_hint: entry.utility_hint,
+                constraints: entry.constraints.clone(),
+            })
+            .collect::<Vec<_>>();
+        let commitments = self
+            .commitments_by_npc
+            .values()
+            .map(|entry| CommitmentState {
+                commitment_id: entry.commitment_id.clone(),
+                npc_id: entry.npc_id.clone(),
+                action_family: entry.action_family.clone(),
+                started_tick: entry.started_tick,
+                due_tick: entry.due_tick,
+                cadence_ticks: entry.cadence_ticks,
+                progress_ticks: entry.progress_ticks,
+                inertia_score: entry.inertia_score,
+                status: entry.status.clone(),
+            })
+            .collect::<Vec<_>>();
+        let time_budgets = self
+            .time_budget_by_npc
+            .values()
+            .map(|entry| TimeBudgetState {
+                npc_id: entry.npc_id.clone(),
+                tick: entry.tick,
+                sleep_hours: entry.sleep_hours,
+                work_hours: entry.work_hours,
+                care_hours: entry.care_hours,
+                travel_hours: entry.travel_hours,
+                social_hours: entry.social_hours,
+                recovery_hours: entry.recovery_hours,
+                free_hours: entry.free_hours,
+            })
+            .collect::<Vec<_>>();
+        let market_clearing = self
+            .market_clearing_by_settlement
+            .values()
+            .map(|entry| MarketClearingState {
+                settlement_id: entry.settlement_id.clone(),
+                staples_price_index: entry.staples_price_index,
+                fuel_price_index: entry.fuel_price_index,
+                medicine_price_index: entry.medicine_price_index,
+                wage_pressure: entry.wage_pressure,
+                shortage_score: entry.shortage_score,
+                unmet_demand: entry.unmet_demand,
+                cleared_tick: entry.cleared_tick,
+                market_cleared: entry.market_cleared,
+            })
+            .collect::<Vec<_>>();
+        let accounting_transfers = self
+            .accounting_transfers
+            .iter()
+            .rev()
+            .take(256)
+            .cloned()
+            .map(|entry| AccountingTransferState {
+                transfer_id: entry.transfer_id,
+                tick: entry.tick,
+                settlement_id: entry.settlement_id,
+                from_account: entry.from_account,
+                to_account: entry.to_account,
+                resource_kind: entry.resource_kind,
+                amount: entry.amount,
+                cause_event_id: entry.cause_event_id,
+            })
+            .collect::<Vec<_>>();
+        let institution_queue = self
+            .institution_queue_by_settlement
+            .values()
+            .map(|entry| InstitutionQueueState {
+                settlement_id: entry.settlement_id.clone(),
+                pending_cases: entry.pending_cases,
+                processed_cases: entry.processed_cases,
+                dropped_cases: entry.dropped_cases,
+                avg_response_latency: entry.avg_response_latency,
+            })
+            .collect::<Vec<_>>();
 
         Snapshot {
             schema_version: SCHEMA_VERSION_V1.to_string(),
@@ -668,6 +915,25 @@ impl Kernel {
                         "ambition": profile.ambition,
                         "empathy": profile.empathy,
                         "resilience": profile.resilience,
+                        "aggression": profile.aggression,
+                        "patience": profile.patience,
+                        "honor": profile.honor,
+                        "generosity": profile.generosity,
+                        "romance_drive": profile.romance_drive,
+                        "gossip_drive": profile.gossip_drive,
+                    }))
+                    .collect::<Vec<_>>(),
+                "npc_profiles": self
+                    .npcs
+                    .iter()
+                    .map(|npc| json!({
+                        "npc_id": npc.npc_id.clone(),
+                        "location_id": npc.location_id.clone(),
+                        "profession": npc.profession.clone(),
+                        "aspiration": npc.aspiration.clone(),
+                        "social_class": npc.social_class.clone(),
+                        "temperament": npc.temperament.clone(),
+                        "hobbies": npc.hobbies.clone(),
                     }))
                     .collect::<Vec<_>>(),
                 "households": household_ledgers.clone(),
@@ -685,6 +951,38 @@ impl Kernel {
                 "groups": groups,
                 "mobility": mobility_routes,
                 "narrative_summaries": narrative_summaries,
+                "opportunities": opportunities,
+                "commitments": commitments,
+                "time_budgets": time_budgets,
+                "market_clearing": market_clearing,
+                "accounting_transfers": accounting_transfers,
+                "institution_queue": institution_queue,
+                "observations": self
+                    .observations_by_npc
+                    .iter()
+                    .map(|(npc_id, entries)| json!({
+                        "npc_id": npc_id,
+                        "entries": entries.iter().map(|entry| json!({
+                            "tick": entry.tick,
+                            "location_id": entry.location_id,
+                            "topic": entry.topic,
+                            "salience": entry.salience,
+                            "source_event_id": entry.source_event_id,
+                        })).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "pair_tensions": self
+                    .tension_by_pair
+                    .iter()
+                    .map(|((source_npc_id, target_npc_id), tension)| json!({
+                        "source_npc_id": source_npc_id,
+                        "target_npc_id": target_npc_id,
+                        "anger": tension.anger,
+                        "losses": tension.losses,
+                        "coin_lost": tension.coin_lost,
+                        "last_tick": tension.last_tick,
+                    }))
+                    .collect::<Vec<_>>(),
             }),
             settlement_states: json!({
                 "rumor_heat_by_location": self.scenario_state.rumor_heat_by_location.clone(),
@@ -731,6 +1029,25 @@ impl Kernel {
                         "ambition": profile.ambition,
                         "empathy": profile.empathy,
                         "resilience": profile.resilience,
+                        "aggression": profile.aggression,
+                        "patience": profile.patience,
+                        "honor": profile.honor,
+                        "generosity": profile.generosity,
+                        "romance_drive": profile.romance_drive,
+                        "gossip_drive": profile.gossip_drive,
+                    }))
+                    .collect::<Vec<_>>(),
+                "npc_profiles": self
+                    .npcs
+                    .iter()
+                    .map(|npc| json!({
+                        "npc_id": npc.npc_id.clone(),
+                        "location_id": npc.location_id.clone(),
+                        "profession": npc.profession.clone(),
+                        "aspiration": npc.aspiration.clone(),
+                        "social_class": npc.social_class.clone(),
+                        "temperament": npc.temperament.clone(),
+                        "hobbies": npc.hobbies.clone(),
                     }))
                     .collect::<Vec<_>>(),
                 "households": household_ledgers,
@@ -922,7 +1239,10 @@ impl Kernel {
                 harvest_shock,
                 self.scenario_state.winter_severity,
                 law_case_load,
-                self.item_registry.values().filter(|item| item.stolen).count(),
+                self.item_registry
+                    .values()
+                    .filter(|item| item.stolen)
+                    .count(),
             );
 
             let economy = self.npc_economy_by_id.get(&npc.npc_id);
@@ -939,16 +1259,17 @@ impl Kernel {
                     push_unique(&mut top_intents, "seek_shelter");
                     push_unique(&mut top_pressures, "shelter_instability");
                 } else if matches!(economy.shelter_status, ShelterStatus::Precarious) {
-                    let (eviction_risk, rent_due_in_ticks) = self
+                    let (eviction_risk, rent_due_in_ticks, rent_amount) = self
                         .households_by_id
                         .get(&economy.household_id)
                         .map(|household| {
                             (
                                 household.eviction_risk_score,
                                 household.rent_due_tick.saturating_sub(execution.tick) as i64,
+                                household.rent_amount,
                             )
                         })
-                        .unwrap_or((0, 240));
+                        .unwrap_or((0, 240, 0));
                     if eviction_risk >= 80
                         || (eviction_risk >= 65
                             && economy.wallet <= 0
@@ -959,10 +1280,26 @@ impl Kernel {
                     } else {
                         push_unique(&mut top_beliefs, "shelter_is_fragile_but_recoverable");
                     }
+                    if rent_due_in_ticks <= 48 {
+                        push_unique(&mut top_intents, "seek_income");
+                        push_unique(&mut top_pressures, "rent_window_open");
+                    }
+                    if rent_due_in_ticks <= 24 && economy.wallet < rent_amount.max(2) {
+                        push_unique(&mut top_intents, "seek_income");
+                        push_unique(&mut top_pressures, "rent_deadline");
+                    }
                     if rent_due_in_ticks <= 12 && economy.wallet < 2 {
                         push_unique(&mut top_intents, "seek_income");
                         push_unique(&mut top_pressures, "rent_deadline");
                     }
+                }
+                if economy.health <= 60 || economy.illness_ticks > 0 {
+                    push_unique(&mut top_intents, "preserve_health");
+                    push_unique(&mut top_pressures, "health_risk");
+                }
+                if economy.illness_ticks > 0 {
+                    push_unique(&mut top_intents, "seek_treatment");
+                    push_unique(&mut top_beliefs, "illness_is_active");
                 }
                 if economy.apprenticeship_progress >= 120 {
                     push_unique(&mut top_intents, "seek_opportunity");
@@ -972,7 +1309,8 @@ impl Kernel {
                 }
             }
 
-            if let Some(contract_id) = economy.and_then(|value| value.employer_contract_id.as_ref()) {
+            if let Some(contract_id) = economy.and_then(|value| value.employer_contract_id.as_ref())
+            {
                 if let Some(contract) = self.contracts_by_id.get(contract_id) {
                     if contract.contract.reliability_score < 45 {
                         push_unique(&mut top_beliefs, "employer_payment_unreliable");
@@ -982,6 +1320,26 @@ impl Kernel {
                 }
             } else {
                 push_unique(&mut top_beliefs, "no_stable_contract");
+            }
+
+            if let Some(market) = self.labor_market_by_settlement.get(&npc.location_id) {
+                let saturation_score = (market.underemployment_index / 12)
+                    + if market.open_roles <= 1 {
+                        3
+                    } else if market.open_roles <= 2 {
+                        2
+                    } else if market.open_roles <= 3 {
+                        1
+                    } else {
+                        0
+                    };
+                if saturation_score >= 5 {
+                    push_unique(&mut top_pressures, "labor_market_saturated");
+                    push_unique(&mut top_beliefs, "competition_for_coin_work_high");
+                    push_unique(&mut top_intents, "seek_opportunity");
+                } else if saturation_score <= 1 {
+                    push_unique(&mut top_beliefs, "coin_work_market_open");
+                }
             }
 
             let trust_support = self
@@ -1016,6 +1374,21 @@ impl Kernel {
                 if profile.ambition >= 65 {
                     push_unique(&mut top_intents, "seek_opportunity");
                 }
+                if profile.romance_drive >= 62 {
+                    push_unique(&mut top_intents, "seek_companionship");
+                }
+                if profile.gossip_drive >= 58 {
+                    push_unique(&mut top_intents, "exchange_stories");
+                }
+                if profile.aggression >= 65 && profile.patience <= 45 {
+                    push_unique(&mut top_intents, "settle_grievance");
+                }
+                if profile.generosity >= 60 {
+                    push_unique(&mut top_beliefs, "sharing_is_status_positive");
+                }
+                if profile.honor >= 62 {
+                    push_unique(&mut top_beliefs, "public_reputation_matters");
+                }
                 if profile.risk_tolerance <= 40 {
                     push_unique(&mut top_beliefs, "risk_aversion_bias");
                 } else if profile.risk_tolerance >= 65 {
@@ -1032,6 +1405,7 @@ impl Kernel {
                 top_intents,
                 top_beliefs,
                 top_pressures,
+                opportunities: Vec::new(),
                 alternatives: Vec::new(),
                 chosen_action: None,
             });
@@ -1066,6 +1440,8 @@ impl Kernel {
             let wallet = economy.map(|entry| entry.wallet).unwrap_or_default();
             let debt_balance = economy.map(|entry| entry.debt_balance).unwrap_or_default();
             let food_reserve_days = economy.map(|entry| entry.food_reserve_days).unwrap_or(3);
+            let health = economy.map(|entry| entry.health).unwrap_or(85);
+            let illness_ticks = economy.map(|entry| entry.illness_ticks).unwrap_or(0);
             let dependents_count = economy
                 .map(|entry| i64::from(entry.dependents_count))
                 .unwrap_or_default();
@@ -1077,7 +1453,13 @@ impl Kernel {
                 .and_then(|contract_id| self.contracts_by_id.get(contract_id))
                 .map(|contract| i64::from(contract.contract.reliability_score))
                 .unwrap_or(0);
-            let (eviction_risk, rent_due_in_ticks, rent_amount, rent_reserve_coin, rent_cadence_ticks) = economy
+            let (
+                eviction_risk,
+                rent_due_in_ticks,
+                rent_amount,
+                rent_reserve_coin,
+                rent_cadence_ticks,
+            ) = economy
                 .and_then(|entry| self.households_by_id.get(&entry.household_id))
                 .map(|household| {
                     (
@@ -1103,6 +1485,21 @@ impl Kernel {
                         && event.event_type == EventType::TheftCommitted
                 })
                 .count() as i64;
+            let local_conflict_pressure = self
+                .event_log
+                .iter()
+                .rev()
+                .take(96)
+                .filter(|event| {
+                    event.location_id == decision.location_id
+                        && matches!(
+                            event.event_type,
+                            EventType::InsultExchanged
+                                | EventType::PunchThrown
+                                | EventType::BrawlStarted
+                        )
+                })
+                .count() as i64;
             let trust_support = self
                 .relationship_edges
                 .values()
@@ -1124,12 +1521,16 @@ impl Kernel {
             let low_pressure_economic_opportunity = self
                 .labor_market_by_settlement
                 .get(&decision.location_id)
-                .map(|market| market.open_roles as i64 + (4 - market.underemployment_index / 10).max(0))
+                .map(|market| {
+                    market.open_roles as i64 + (4 - market.underemployment_index / 10).max(0)
+                })
                 .unwrap_or(0)
                 + self
                     .stock_by_settlement
                     .get(&decision.location_id)
-                    .map(|stock| ((stock.staples / 6).max(0) + (stock.craft_inputs / 8).max(0)).min(8))
+                    .map(|stock| {
+                        ((stock.staples / 6).max(0) + (stock.craft_inputs / 8).max(0)).min(8)
+                    })
                     .unwrap_or(0);
             let default_profile = NpcTraitProfile {
                 risk_tolerance: 50,
@@ -1138,13 +1539,22 @@ impl Kernel {
                 ambition: 50,
                 empathy: 50,
                 resilience: 50,
+                aggression: 50,
+                patience: 50,
+                honor: 50,
+                generosity: 50,
+                romance_drive: 50,
+                gossip_drive: 50,
             };
             let profile = self
                 .npc_traits_by_id
                 .get(&decision.npc_id)
                 .unwrap_or(&default_profile);
 
-            decision.alternatives = build_action_candidates(
+            let time_budget =
+                build_time_budget_for_tick(execution.tick, &decision.npc_id, profile, is_wanted);
+
+            let mut alternatives = build_action_candidates(
                 execution.tick,
                 &decision.npc_id,
                 &decision.top_intents,
@@ -1158,6 +1568,8 @@ impl Kernel {
                 wallet,
                 debt_balance,
                 food_reserve_days,
+                health,
+                illness_ticks,
                 dependents_count,
                 shelter_status,
                 contract_reliability,
@@ -1167,6 +1579,7 @@ impl Kernel {
                 rent_cadence_ticks,
                 trust_support,
                 local_theft_pressure,
+                local_conflict_pressure,
                 local_support_need,
                 low_pressure_economic_opportunity,
                 profile,
@@ -1176,19 +1589,56 @@ impl Kernel {
             );
 
             let action_memory = self.action_memory_by_npc.get(&decision.npc_id);
+            let scarcity_pressure = decision.top_pressures.iter().any(|pressure| {
+                matches!(
+                    pressure.as_str(),
+                    "food_tight" | "food_shock" | "seasonal_strain" | "cold_exposure_risk"
+                )
+            });
+            let theft_desperation = wallet <= 2
+                && !is_wanted
+                && (debt_balance >= 4
+                    || (rent_shortfall > 0 && rent_due_in_ticks <= 24 && eviction_risk >= 30)
+                    || (food_reserve_days <= 1 && trust_support <= 1)
+                    || (scarcity_pressure && trust_support <= 1 && wallet <= 1));
             apply_action_memory_bias(
-                &mut decision.alternatives,
+                &mut alternatives,
                 action_memory,
                 is_wanted,
                 law_case_load,
                 execution.tick,
                 shelter_status,
                 food_reserve_days,
+                debt_balance,
                 eviction_risk,
                 local_theft_pressure,
                 local_support_need,
+                theft_desperation,
                 profile,
             );
+
+            let opportunities = build_opportunities_from_candidates(
+                execution.tick,
+                decision,
+                &alternatives,
+                &time_budget,
+                rent_due_in_ticks,
+                rent_shortfall,
+                law_case_load,
+            );
+
+            let constrained_alternatives = constrain_candidates_by_opportunities(
+                execution.tick,
+                &decision.npc_id,
+                &alternatives,
+                &opportunities,
+            );
+
+            decision.opportunities = opportunities.clone();
+            decision.alternatives = constrained_alternatives;
+            execution
+                .opportunities_by_npc
+                .insert(decision.npc_id.clone(), opportunities);
         }
     }
 
@@ -1201,120 +1651,16 @@ impl Kernel {
         );
 
         for decision in &mut execution.npc_decisions {
-            let Some(mut chosen) = choose_candidate(&decision.alternatives) else {
-                continue;
-            };
             let repetitive_streak = self
                 .action_memory_by_npc
                 .get(&decision.npc_id)
                 .map(|memory| memory.repeat_streak)
                 .unwrap_or_default();
-            let scarcity_mode = decision
-                .top_intents
-                .iter()
-                .any(|intent| intent == "secure_food")
-                || decision
-                    .top_pressures
-                    .iter()
-                    .any(|pressure| pressure == "household_hunger" || pressure == "debt_strain");
-            let rumor_mode = decision
-                .top_intents
-                .iter()
-                .any(|intent| intent == "investigate_rumor")
-                || decision.top_pressures.iter().any(|pressure| {
-                    pressure == "information_rising" || pressure == "information_volatile"
-                });
-            if repetitive_streak >= 3 && scarcity_mode && execution.tick % 12 == 0 {
-                let mut ranked = decision.alternatives.clone();
-                ranked.sort_by(|left, right| {
-                    (right.priority, right.score, &right.action)
-                        .cmp(&(left.priority, left.score, &left.action))
-                });
-                if let Some(alternative) = ranked
-                    .into_iter()
-                    .find(|candidate| candidate.action != chosen.action)
-                {
-                    chosen = alternative;
-                }
-            } else if repetitive_streak >= 2 && rumor_mode && execution.tick % 8 == 0 {
-                let mut ranked = decision.alternatives.clone();
-                ranked.sort_by(|left, right| {
-                    (right.priority, right.score, &right.action)
-                        .cmp(&(left.priority, left.score, &left.action))
-                });
-                if let Some(alternative) = ranked.into_iter().find(|candidate| {
-                    candidate.action != chosen.action
-                        && matches!(
-                            candidate.action.as_str(),
-                            "share_rumor"
-                                | "question_travelers"
-                                | "investigate_rumor"
-                                | "mediate_dispute"
-                                | "trade_visit"
-                        )
-                }) {
-                    chosen = alternative;
-                }
-            } else if repetitive_streak >= 3 && execution.tick % 10 == 0 {
-                let mut ranked = decision.alternatives.clone();
-                ranked.sort_by(|left, right| {
-                    (right.priority, right.score, &right.action)
-                        .cmp(&(left.priority, left.score, &left.action))
-                });
-                if let Some(alternative) = ranked
-                    .into_iter()
-                    .find(|candidate| candidate.action != chosen.action)
-                {
-                    chosen = alternative;
-                }
-            } else if execution.tick % 72 == 0 {
-                let mut ranked = decision.alternatives.clone();
-                ranked.sort_by(|left, right| {
-                    (right.priority, right.score, &right.action)
-                        .cmp(&(left.priority, left.score, &left.action))
-                });
-                let exploration_targets = [
-                    "craft_goods",
-                    "tend_fields",
-                    "work_for_food",
-                    "forage",
-                    "question_travelers",
-                    "mediate_dispute",
-                    "trade_visit",
-                ];
-                let target_idx = (self.deterministic_stream(
-                    execution.tick,
-                    Phase::ActionResolution,
-                    &decision.npc_id,
-                    "exploration_target",
-                ) % exploration_targets.len() as u64) as usize;
-                let target_action = exploration_targets[target_idx];
-                if let Some(alternative) = ranked
-                    .iter()
-                    .find(|candidate| {
-                        candidate.action != chosen.action
-                            && candidate.action.as_str() == target_action
-                    })
-                    .cloned()
-                    .or_else(|| {
-                        ranked.into_iter().find(|candidate| {
-                            candidate.action != chosen.action
-                                && matches!(
-                                    candidate.action.as_str(),
-                                    "craft_goods"
-                                        | "tend_fields"
-                                        | "work_for_food"
-                                        | "forage"
-                                        | "question_travelers"
-                                        | "mediate_dispute"
-                                        | "trade_visit"
-                                )
-                        })
-                    })
-                {
-                    chosen = alternative;
-                }
-            }
+            let Some(chosen) =
+                self.choose_candidate_for_decision(decision, execution.tick, repetitive_streak)
+            else {
+                continue;
+            };
 
             decision.chosen_action = Some(chosen.clone());
 
@@ -1325,8 +1671,11 @@ impl Kernel {
                 .cloned()
                 .collect::<Vec<_>>();
             ranked_alternatives.sort_by(|left, right| {
-                (right.priority, right.score, &right.action)
-                    .cmp(&(left.priority, left.score, &left.action))
+                (right.priority, right.score, &right.action).cmp(&(
+                    left.priority,
+                    left.score,
+                    &left.action,
+                ))
             });
             let alternatives_considered = ranked_alternatives
                 .into_iter()
@@ -1398,10 +1747,99 @@ impl Kernel {
                 why_chain,
                 expected_consequences,
                 selection_rationale: format!(
-                    "selected action '{}' by deterministic priority/score ordering",
+                    "selected action '{}' by deterministic context utility with commitment/cadence constraints",
                     chosen.action
                 ),
             };
+
+            if execution.tick % 4 == 0 {
+                if let Some(opportunity) = decision
+                    .opportunities
+                    .iter()
+                    .find(|entry| entry.action == chosen.action)
+                {
+                    execution.planned_events.push(PlannedEvent {
+                        event_type: EventType::OpportunityOpened,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        targets: vec![ActorRef {
+                            actor_id: opportunity.opportunity_id.clone(),
+                            actor_kind: "opportunity".to_string(),
+                        }],
+                        caused_by: Vec::new(),
+                        tags: vec![
+                            "opportunity".to_string(),
+                            "opened".to_string(),
+                            "accepted_path".to_string(),
+                        ],
+                        details: Some(json!({
+                            "opportunity_id": opportunity.opportunity_id,
+                            "action": chosen.action,
+                            "source": opportunity.source,
+                            "utility_hint": opportunity.utility_hint,
+                            "expires_tick": opportunity.expires_tick,
+                        })),
+                        reason_draft: None,
+                        state_effects: PlannedStateEffects::default(),
+                    });
+
+                    execution.planned_events.push(PlannedEvent {
+                        event_type: EventType::OpportunityAccepted,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        targets: vec![ActorRef {
+                            actor_id: opportunity.opportunity_id.clone(),
+                            actor_kind: "opportunity".to_string(),
+                        }],
+                        caused_by: Vec::new(),
+                        tags: vec!["opportunity".to_string(), "accepted".to_string()],
+                        details: Some(json!({
+                            "opportunity_id": opportunity.opportunity_id,
+                            "action": chosen.action,
+                            "source": opportunity.source,
+                            "utility_hint": opportunity.utility_hint,
+                        })),
+                        reason_draft: None,
+                        state_effects: PlannedStateEffects::default(),
+                    });
+                }
+            }
+
+            if execution.tick % 24 == 0 {
+                if let Some(rejected) = decision
+                    .opportunities
+                    .iter()
+                    .find(|entry| entry.action != chosen.action)
+                {
+                    execution.planned_events.push(PlannedEvent {
+                        event_type: EventType::OpportunityRejected,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        targets: vec![ActorRef {
+                            actor_id: rejected.opportunity_id.clone(),
+                            actor_kind: "opportunity".to_string(),
+                        }],
+                        caused_by: Vec::new(),
+                        tags: vec!["opportunity".to_string(), "rejected".to_string()],
+                        details: Some(json!({
+                            "opportunity_id": rejected.opportunity_id,
+                            "rejected_action": rejected.action,
+                            "accepted_action": chosen.action,
+                        })),
+                        reason_draft: None,
+                        state_effects: PlannedStateEffects::default(),
+                    });
+                }
+            }
 
             execution.planned_events.push(PlannedEvent {
                 event_type: EventType::NpcActionCommitted,
@@ -1427,6 +1865,398 @@ impl Kernel {
                 self.action_consequence_events(execution.tick, decision, &chosen);
             execution.planned_events.extend(consequence_events);
         }
+    }
+
+    fn choose_candidate_for_decision(
+        &self,
+        decision: &NpcDecision,
+        tick: u64,
+        repetitive_streak: u32,
+    ) -> Option<ActionCandidate> {
+        if decision.alternatives.is_empty() {
+            return None;
+        }
+
+        let mut ranked = decision
+            .alternatives
+            .iter()
+            .map(|candidate| {
+                (
+                    self.candidate_context_utility(tick, decision, candidate, repetitive_streak),
+                    candidate.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            (right.0, right.1.priority, right.1.score, &right.1.action).cmp(&(
+                left.0,
+                left.1.priority,
+                left.1.score,
+                &left.1.action,
+            ))
+        });
+        let (mut chosen_score, mut chosen) = ranked.first().cloned()?;
+
+        if let Some(commitment) = self.commitments_by_npc.get(&decision.npc_id) {
+            let emergency = decision_has_emergency_pressure(decision);
+            let commitment_due = tick >= commitment.due_tick;
+            if !emergency && commitment.inertia_score > 0 {
+                if let Some((continue_score, continue_candidate)) = ranked
+                    .iter()
+                    .find(|(_, candidate)| {
+                        commitment_family_for_action(candidate.action.as_str())
+                            == commitment.action_family
+                    })
+                    .cloned()
+                {
+                    let continuation_margin = if commitment_due { 700 } else { 1_200 };
+                    if commitment_family_for_action(chosen.action.as_str())
+                        != commitment.action_family
+                        && chosen_score <= continue_score + continuation_margin
+                    {
+                        chosen_score = continue_score;
+                        chosen = continue_candidate;
+                    }
+                }
+            }
+        }
+
+        let emergency = decision_has_emergency_pressure(decision);
+        let diversification_phase = (hash_bytes(decision.npc_id.as_bytes()) % 18) as u64;
+        if !emergency && tick % 18 == diversification_phase {
+            if let Some((alternative_score, alternative)) =
+                ranked.iter().find(|(score, candidate)| {
+                    candidate.action != chosen.action
+                        && !matches!(
+                            commitment_family_for_action(candidate.action.as_str()),
+                            "livelihood" | "rent" | "shelter"
+                        )
+                        && *score + 2_800 >= chosen_score
+                })
+            {
+                chosen_score = *alternative_score;
+                chosen = alternative.clone();
+            }
+        }
+        if !emergency && repetitive_streak >= 2 && tick % 12 == 0 {
+            let chosen_family = commitment_family_for_action(chosen.action.as_str());
+            if let Some((_, alternative)) = ranked.iter().find(|(score, candidate)| {
+                commitment_family_for_action(candidate.action.as_str()) != chosen_family
+                    && candidate.action != chosen.action
+                    && *score + 2_400 >= chosen_score
+            }) {
+                chosen = alternative.clone();
+            }
+        } else if !emergency && repetitive_streak >= 4 && tick % 24 == 0 {
+            if let Some((_, alternative)) = ranked.iter().find(|(score, candidate)| {
+                candidate.action != chosen.action
+                    && *score + 800 >= chosen_score
+                    && matches!(
+                        candidate.action.as_str(),
+                        "work_for_coin"
+                            | "work_for_food"
+                            | "trade_visit"
+                            | "converse_neighbor"
+                            | "lend_coin"
+                            | "question_travelers"
+                            | "mediate_dispute"
+                            | "observe_notable_event"
+                            | "forage"
+                            | "share_rumor"
+                            | "patrol_road"
+                    )
+            }) {
+                chosen = alternative.clone();
+            }
+        }
+
+        let scarcity_pressure = decision.top_pressures.iter().any(|pressure| {
+            matches!(
+                pressure.as_str(),
+                "food_tight" | "food_shock" | "seasonal_strain" | "cold_exposure_risk"
+            )
+        });
+        let financial_pressure = decision
+            .top_pressures
+            .iter()
+            .any(|pressure| matches!(pressure.as_str(), "debt_strain" | "rent_deadline"));
+        if chosen.action != "steal_supplies"
+            && scarcity_pressure
+            && financial_pressure
+            && !decision
+                .top_intents
+                .iter()
+                .any(|intent| intent == "stabilize_security")
+        {
+            if let Some((steal_score, steal_candidate)) = ranked
+                .iter()
+                .find(|(_, candidate)| candidate.action == "steal_supplies")
+            {
+                let roll = self.deterministic_stream(
+                    tick,
+                    Phase::ActionResolution,
+                    &decision.npc_id,
+                    "desperation_theft_override",
+                ) % 100;
+                if roll < 18 && *steal_score + 2_200 >= chosen_score {
+                    chosen = steal_candidate.clone();
+                }
+            }
+        }
+
+        Some(chosen)
+    }
+
+    fn candidate_context_utility(
+        &self,
+        tick: u64,
+        decision: &NpcDecision,
+        candidate: &ActionCandidate,
+        repetitive_streak: u32,
+    ) -> i64 {
+        let mut score = i64::from(candidate.priority) * 2_200 + candidate.score as i64;
+        let has_intent = |needle: &str| decision.top_intents.iter().any(|intent| intent == needle);
+        let has_pressure = |needle: &str| {
+            decision
+                .top_pressures
+                .iter()
+                .any(|pressure| pressure == needle)
+        };
+
+        let economic_urgent = has_intent("seek_income")
+            || has_intent("seek_opportunity")
+            || has_pressure("debt_strain")
+            || has_pressure("rent_deadline")
+            || has_pressure("rent_window_open");
+        let hunger_urgent = has_intent("secure_food") || has_pressure("household_hunger");
+        let shelter_urgent = has_intent("seek_shelter") || has_pressure("shelter_instability");
+        let social_urgent = has_intent("build_trust") || has_pressure("social_support_thin");
+        let rumor_urgent = has_intent("investigate_rumor") || has_pressure("information_rising");
+        let security_urgent = has_intent("stabilize_security")
+            || has_pressure("institutional_corruption")
+            || has_intent("evade_patrols");
+        let labor_market_saturated = has_pressure("labor_market_saturated");
+        let day_phase = tick % 24;
+        let (same_action_count, total_action_count) = self.recent_action_stats(
+            tick,
+            &decision.location_id,
+            candidate.action.as_str(),
+            48,
+        );
+        if total_action_count >= 30 {
+            let action_share_pct = (same_action_count * 100) / total_action_count.max(1);
+            if action_share_pct >= 45 {
+                score -= ((action_share_pct - 45) * 20).clamp(0, 1_200);
+            } else if action_share_pct <= 6 {
+                score += ((6 - action_share_pct) * 18).clamp(0, 260);
+            }
+        }
+
+        match candidate.action.as_str() {
+            "work_for_coin" => {
+                if economic_urgent {
+                    score += 1_500;
+                }
+                if has_pressure("debt_strain") {
+                    score += 650;
+                }
+                if labor_market_saturated {
+                    score -= if economic_urgent { 900 } else { 1_900 };
+                }
+                if !economic_urgent {
+                    score -= 1_300;
+                }
+                if !economic_urgent && !(6..=16).contains(&day_phase) {
+                    score -= 1_250;
+                }
+                if repetitive_streak >= 2 && !economic_urgent {
+                    score -= 800 + i64::from(repetitive_streak) * 240;
+                }
+            }
+            "work_for_food" | "forage" => {
+                if hunger_urgent {
+                    score += 1_600;
+                } else {
+                    score -= 450;
+                }
+            }
+            "pay_rent" => {
+                if has_pressure("rent_deadline")
+                    || has_pressure("rent_window_open")
+                    || shelter_urgent
+                {
+                    score += 2_000;
+                } else {
+                    score -= 1_400;
+                }
+            }
+            "seek_shelter" => {
+                if shelter_urgent {
+                    score += 1_700;
+                } else {
+                    score -= 900;
+                }
+            }
+            "craft_goods" | "tend_fields" => {
+                if economic_urgent {
+                    score += 900;
+                }
+                if social_urgent && !economic_urgent {
+                    score -= 450;
+                }
+                if labor_market_saturated {
+                    score += 900;
+                }
+                if (6..=16).contains(&day_phase) {
+                    score += 350;
+                } else if !economic_urgent {
+                    score -= 700;
+                }
+                if total_action_count >= 24 && same_action_count * 100 / total_action_count >= 40 {
+                    score -= 1_100;
+                }
+            }
+            "trade_visit" => {
+                if economic_urgent || rumor_urgent {
+                    score += 800;
+                }
+                if labor_market_saturated {
+                    score += 500;
+                }
+            }
+            "converse_neighbor"
+            | "lend_coin"
+            | "share_meal"
+            | "form_mutual_aid_group"
+            | "mediate_dispute"
+            | "court_romance" => {
+                if social_urgent {
+                    score += 1_300;
+                } else {
+                    score -= 500;
+                }
+            }
+            "investigate_rumor" | "question_travelers" | "share_rumor" => {
+                if rumor_urgent {
+                    score += 1_200;
+                } else {
+                    score -= 600;
+                }
+            }
+            "observe_notable_event" => {
+                if rumor_urgent || social_urgent || security_urgent {
+                    score += 1_050;
+                } else {
+                    score -= 350;
+                }
+                if (8..=20).contains(&day_phase) {
+                    score += 250;
+                }
+            }
+            "seek_treatment" => {
+                if has_pressure("seasonal_strain")
+                    || has_pressure("cold_exposure_risk")
+                    || has_pressure("household_hunger")
+                    || has_pressure("health_risk")
+                    || has_intent("seek_treatment")
+                    || has_intent("preserve_health")
+                {
+                    score += 1_100;
+                } else {
+                    score -= 300;
+                }
+            }
+            "organize_watch" | "patrol_road" | "collect_testimony" | "defend_patron" => {
+                if security_urgent {
+                    score += 1_000;
+                } else {
+                    score -= 700;
+                }
+            }
+            "steal_supplies" | "fence_goods" => {
+                let opportunistic_drive = has_intent("seek_opportunity")
+                    || has_pressure("labor_market_saturated")
+                    || has_intent("settle_grievance");
+                if hunger_urgent || economic_urgent {
+                    score += 200;
+                } else if opportunistic_drive {
+                    score -= 850;
+                } else {
+                    score -= 2_600;
+                }
+                if has_pressure("rent_deadline") {
+                    score += 900;
+                }
+                if has_pressure("debt_strain") {
+                    score += 600;
+                }
+                if has_pressure("food_tight") || has_pressure("food_shock") {
+                    score += 2_000;
+                }
+                if has_pressure("seasonal_strain") || has_pressure("cold_exposure_risk") {
+                    score += 1_400;
+                }
+                if has_pressure("rent_deadline") && has_pressure("debt_strain") {
+                    score += 900;
+                }
+                if labor_market_saturated {
+                    score += 500;
+                }
+            }
+            _ => {}
+        }
+
+        if !hunger_urgent && !shelter_urgent {
+            if (16..=20).contains(&day_phase)
+                && matches!(
+                    candidate.action.as_str(),
+                    "share_meal"
+                        | "form_mutual_aid_group"
+                        | "mediate_dispute"
+                        | "converse_neighbor"
+                        | "lend_coin"
+                        | "court_romance"
+                )
+            {
+                score += 850;
+            }
+            if (8..=11).contains(&day_phase)
+                && matches!(
+                    candidate.action.as_str(),
+                    "investigate_rumor"
+                        | "question_travelers"
+                        | "share_rumor"
+                        | "observe_notable_event"
+                        | "patrol_road"
+                        | "collect_testimony"
+                )
+            {
+                score += 700;
+            }
+            if (16..=20).contains(&day_phase)
+                && matches!(candidate.action.as_str(), "craft_goods" | "tend_fields")
+            {
+                score -= 520;
+            }
+        }
+
+        if let Some(memory) = self.action_memory_by_npc.get(&decision.npc_id) {
+            if memory.last_action.as_deref() == Some(candidate.action.as_str()) {
+                score -= 900 + i64::from(repetitive_streak) * 450;
+            } else {
+                score += (i64::from(repetitive_streak) * 180).clamp(0, 700);
+            }
+        }
+
+        if matches!(candidate.action.as_str(), "craft_goods" | "tend_fields")
+            && repetitive_streak >= 2
+            && !hunger_urgent
+            && !shelter_urgent
+        {
+            score -= 900 + i64::from(repetitive_streak) * 220;
+        }
+
+        score
     }
 
     fn phase_pressure_economy(&self, execution: &mut TickExecution) {
@@ -1460,7 +2290,8 @@ impl Kernel {
 
         let projected_law_cases = self.projected_law_case_load(execution.planned_events.as_slice());
         let projected_wanted = self.projected_wanted_count(execution.planned_events.as_slice());
-        let projected_stolen = self.projected_stolen_item_count(execution.planned_events.as_slice());
+        let projected_stolen =
+            self.projected_stolen_item_count(execution.planned_events.as_slice());
         execution.active_law_cases = projected_law_cases;
         execution.active_wanted_npcs = projected_wanted;
         execution.stolen_item_count = projected_stolen;
@@ -1519,6 +2350,10 @@ impl Kernel {
         let mut reason_sequence = 0_u64;
 
         self.pressure_index += execution.pressure_delta;
+        self.refresh_time_budgets_from_execution(
+            execution.tick,
+            execution.npc_decisions.as_slice(),
+        );
 
         let system_tick_event = Event {
             schema_version: SCHEMA_VERSION_V1.to_string(),
@@ -1571,6 +2406,14 @@ impl Kernel {
         causal_chain.push(system_event_id.clone());
         self.event_log.push(system_tick_event);
         sequence_in_tick += 1;
+
+        self.sync_opportunities_for_tick(
+            execution.tick,
+            &system_event_id,
+            &mut sequence_in_tick,
+            &mut causal_chain,
+            &execution.opportunities_by_npc,
+        );
 
         for planned in &execution.planned_events {
             let mut planned_caused_by = planned.caused_by.clone();
@@ -1630,6 +2473,14 @@ impl Kernel {
             self.apply_planned_state_effects(&planned.state_effects, execution.tick);
             sequence_in_tick += 1;
         }
+
+        self.sync_commitments_for_tick(
+            execution.tick,
+            &system_event_id,
+            &mut sequence_in_tick,
+            &mut causal_chain,
+            execution.npc_decisions.as_slice(),
+        );
 
         self.progress_story_loops(
             execution.tick,
@@ -1695,9 +2546,22 @@ impl Kernel {
             self.event_log.push(pressure_event);
         }
 
+        self.emit_accounting_transfer_summary(
+            execution.tick,
+            &system_event_id,
+            &mut sequence_in_tick,
+            &mut causal_chain,
+        );
+
+        self.normalize_tick_event_ordering(execution.tick);
         self.reason_packet_log.extend(pending_reason_packets);
 
-        self.last_tick_terminal_event_id = causal_chain.last().cloned();
+        self.last_tick_terminal_event_id = self
+            .event_log
+            .iter()
+            .rev()
+            .find(|event| event.tick == execution.tick)
+            .map(|event| event.event_id.clone());
         self.status.current_tick = execution.tick;
         self.sync_queue_depth();
     }
@@ -1713,9 +2577,8 @@ impl Kernel {
         self.state_hash = mix64(self.state_hash ^ self.scenario_state.winter_severity as u64);
         self.state_hash = mix64(self.state_hash ^ self.scenario_state.removed_npcs.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.social_cohesion as u64);
-        self.state_hash = mix64(
-            self.state_hash ^ sum_positive(self.law_case_load_by_settlement.values()) as u64,
-        );
+        self.state_hash =
+            mix64(self.state_hash ^ sum_positive(self.law_case_load_by_settlement.values()) as u64);
         self.state_hash = mix64(self.state_hash ^ self.wanted_npcs.len() as u64);
         self.state_hash = mix64(
             self.state_hash
@@ -1725,11 +2588,26 @@ impl Kernel {
                     .filter(|item| item.stolen)
                     .count() as u64,
         );
+        self.state_hash = mix64(
+            self.state_hash ^ self.last_bandit_raid_tick_by_settlement.len() as u64,
+        );
+        self.state_hash = mix64(
+            self.state_hash ^ self.settlement_conflict_cooldown_until.len() as u64,
+        );
+        self.state_hash = mix64(self.state_hash ^ self.pair_event_memory.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.last_social_channel_tick.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.households_by_id.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.contracts_by_id.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.relationship_edges.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.groups_by_id.len() as u64);
         self.state_hash = mix64(self.state_hash ^ self.routes_by_id.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.opportunities_by_npc.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.commitments_by_npc.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.time_budget_by_npc.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.market_clearing_by_settlement.len() as u64);
+        self.state_hash =
+            mix64(self.state_hash ^ self.institution_queue_by_settlement.len() as u64);
+        self.state_hash = mix64(self.state_hash ^ self.accounting_transfers.len() as u64);
         self.state_hash = mix64(
             self.state_hash
                 ^ self
@@ -1739,7 +2617,9 @@ impl Kernel {
                         (state.wallet
                             + state.debt_balance
                             + state.food_reserve_days
-                            + state.apprenticeship_progress)
+                            + state.apprenticeship_progress
+                            + state.health
+                            + state.illness_ticks)
                             .max(0) as u64
                     })
                     .sum::<u64>(),
@@ -1789,6 +2669,54 @@ impl Kernel {
             self.state_hash = mix64(self.state_hash ^ profile.ambition.max(0) as u64);
             self.state_hash = mix64(self.state_hash ^ profile.empathy.max(0) as u64);
             self.state_hash = mix64(self.state_hash ^ profile.resilience.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.aggression.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.patience.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.honor.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.generosity.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.romance_drive.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ profile.gossip_drive.max(0) as u64);
+        }
+        for npc in &self.npcs {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc.npc_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc.profession.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc.aspiration.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc.social_class.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc.temperament.as_bytes()));
+        }
+        for (npc_id, observations) in &self.observations_by_npc {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(npc_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ observations.len() as u64);
+            if let Some(last) = observations.last() {
+                self.state_hash = mix64(self.state_hash ^ last.tick);
+                self.state_hash = mix64(self.state_hash ^ hash_bytes(last.topic.as_bytes()));
+            }
+        }
+        for ((source_npc_id, target_npc_id), tension) in &self.tension_by_pair {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(source_npc_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(target_npc_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ tension.anger.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ tension.losses.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ tension.coin_lost.max(0) as u64);
+            self.state_hash = mix64(self.state_hash ^ tension.last_tick);
+        }
+        for ((left, right), memory) in &self.pair_event_memory {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(left.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(right.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ memory.last_conflict_tick);
+            self.state_hash = mix64(self.state_hash ^ memory.last_romance_tick);
+            self.state_hash = mix64(self.state_hash ^ memory.last_social_tick);
+        }
+        for (settlement_id, tick_mark) in &self.last_bandit_raid_tick_by_settlement {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(settlement_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ *tick_mark);
+        }
+        for (settlement_id, cooldown_until) in &self.settlement_conflict_cooldown_until {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(settlement_id.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ *cooldown_until);
+        }
+        for (channel_key, tick_mark) in &self.last_social_channel_tick {
+            self.state_hash = mix64(self.state_hash ^ hash_bytes(channel_key.as_bytes()));
+            self.state_hash = mix64(self.state_hash ^ *tick_mark);
         }
 
         if let Some(last_event_id) = &self.last_tick_terminal_event_id {
@@ -1806,6 +2734,530 @@ impl Kernel {
 
         if self.status.current_tick >= self.status.max_ticks {
             self.status.mode = RunMode::Paused;
+        }
+    }
+
+    fn refresh_time_budgets_from_execution(&mut self, tick: u64, decisions: &[NpcDecision]) {
+        for decision in decisions {
+            let default_profile = NpcTraitProfile {
+                risk_tolerance: 50,
+                sociability: 50,
+                dutifulness: 50,
+                ambition: 50,
+                empathy: 50,
+                resilience: 50,
+                aggression: 50,
+                patience: 50,
+                honor: 50,
+                generosity: 50,
+                romance_drive: 50,
+                gossip_drive: 50,
+            };
+            let profile = self
+                .npc_traits_by_id
+                .get(&decision.npc_id)
+                .unwrap_or(&default_profile);
+            let mut budget = build_time_budget_for_tick(tick, &decision.npc_id, profile, false);
+            if let Some(chosen) = decision.chosen_action.as_ref() {
+                match chosen.verb {
+                    AffordanceVerb::WorkForCoin
+                    | AffordanceVerb::WorkForFood
+                    | AffordanceVerb::TendFields
+                    | AffordanceVerb::CraftGoods => {
+                        budget.work_hours = (budget.work_hours + 2).min(12);
+                    }
+                    AffordanceVerb::TradeVisit
+                    | AffordanceVerb::PatrolRoad
+                    | AffordanceVerb::InvestigateRumor => {
+                        budget.travel_hours = (budget.travel_hours + 2).min(8);
+                    }
+                    AffordanceVerb::ShareMeal
+                    | AffordanceVerb::ConverseNeighbor
+                    | AffordanceVerb::LendCoin
+                    | AffordanceVerb::CourtRomance
+                    | AffordanceVerb::FormMutualAidGroup => {
+                        budget.social_hours = (budget.social_hours + 1).min(8);
+                    }
+                    AffordanceVerb::SeekTreatment => {
+                        budget.recovery_hours = (budget.recovery_hours + 2).min(8);
+                    }
+                    _ => {}
+                }
+            }
+            budget.free_hours = (24
+                - budget.sleep_hours
+                - budget.work_hours
+                - budget.care_hours
+                - budget.travel_hours
+                - budget.social_hours
+                - budget.recovery_hours)
+                .max(0);
+            self.time_budget_by_npc
+                .insert(decision.npc_id.clone(), budget);
+        }
+    }
+
+    fn sync_opportunities_for_tick(
+        &mut self,
+        tick: u64,
+        system_event_id: &str,
+        sequence_in_tick: &mut u64,
+        causal_chain: &mut Vec<String>,
+        opportunities_by_npc: &BTreeMap<String, Vec<OpportunityRuntimeState>>,
+    ) {
+        let prior = self.opportunities_by_npc.clone();
+        for (npc_id, current_entries) in opportunities_by_npc {
+            let previous_entries = prior.get(npc_id).cloned().unwrap_or_default();
+            let previous_ids = previous_entries
+                .iter()
+                .map(|entry| entry.opportunity_id.as_str())
+                .collect::<BTreeSet<_>>();
+            let mut merged = current_entries.clone();
+            merged.sort_by(|left, right| right.utility_hint.cmp(&left.utility_hint));
+            merged.truncate(3);
+
+            if tick % 12 == 0 {
+                for entry in merged.iter().take(1) {
+                    if previous_ids.contains(entry.opportunity_id.as_str()) {
+                        continue;
+                    }
+                    let event = Event {
+                        schema_version: SCHEMA_VERSION_V1.to_string(),
+                        run_id: self.status.run_id.clone(),
+                        tick,
+                        created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                        event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                        sequence_in_tick: *sequence_in_tick,
+                        event_type: EventType::OpportunityOpened,
+                        location_id: entry.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: entry.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        reason_packet_id: None,
+                        caused_by: vec![system_event_id.to_string()],
+                        targets: vec![ActorRef {
+                            actor_id: entry.opportunity_id.clone(),
+                            actor_kind: "opportunity".to_string(),
+                        }],
+                        tags: vec!["opportunity".to_string(), "opened".to_string()],
+                        visibility: None,
+                        details: Some(json!({
+                            "opportunity_id": entry.opportunity_id,
+                            "action": entry.action,
+                            "source": entry.source,
+                            "utility_hint": entry.utility_hint,
+                            "constraints": entry.constraints,
+                            "expires_tick": entry.expires_tick,
+                        })),
+                    };
+                    causal_chain.push(event.event_id.clone());
+                    self.event_log.push(event);
+                    *sequence_in_tick += 1;
+                }
+            }
+
+            if tick % 24 == 0 {
+                if let Some(expired) = previous_entries
+                    .iter()
+                    .find(|entry| entry.expires_tick < tick)
+                {
+                    let event = Event {
+                        schema_version: SCHEMA_VERSION_V1.to_string(),
+                        run_id: self.status.run_id.clone(),
+                        tick,
+                        created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                        event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                        sequence_in_tick: *sequence_in_tick,
+                        event_type: EventType::OpportunityExpired,
+                        location_id: expired.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: expired.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        reason_packet_id: None,
+                        caused_by: vec![system_event_id.to_string()],
+                        targets: vec![ActorRef {
+                            actor_id: expired.opportunity_id.clone(),
+                            actor_kind: "opportunity".to_string(),
+                        }],
+                        tags: vec!["opportunity".to_string(), "expired".to_string()],
+                        visibility: None,
+                        details: Some(json!({
+                            "opportunity_id": expired.opportunity_id,
+                            "action": expired.action,
+                            "expires_tick": expired.expires_tick,
+                        })),
+                    };
+                    causal_chain.push(event.event_id.clone());
+                    self.event_log.push(event);
+                    *sequence_in_tick += 1;
+                }
+            }
+            self.opportunities_by_npc.insert(npc_id.clone(), merged);
+        }
+    }
+
+    fn sync_commitments_for_tick(
+        &mut self,
+        tick: u64,
+        system_event_id: &str,
+        sequence_in_tick: &mut u64,
+        causal_chain: &mut Vec<String>,
+        decisions: &[NpcDecision],
+    ) {
+        for decision in decisions {
+            let Some(chosen) = decision.chosen_action.as_ref() else {
+                continue;
+            };
+            let action_family = commitment_family_for_action(chosen.action.as_str()).to_string();
+            match self.commitments_by_npc.get_mut(&decision.npc_id) {
+                Some(existing) if existing.action_family == action_family => {
+                    existing.progress_ticks = existing.progress_ticks.saturating_add(1);
+                    existing.due_tick = tick + existing.cadence_ticks;
+                    if existing.progress_ticks == 2 || existing.progress_ticks % 8 == 0 {
+                        let event = Event {
+                            schema_version: SCHEMA_VERSION_V1.to_string(),
+                            run_id: self.status.run_id.clone(),
+                            tick,
+                            created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                            event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                            sequence_in_tick: *sequence_in_tick,
+                            event_type: EventType::CommitmentContinued,
+                            location_id: decision.location_id.clone(),
+                            actors: vec![ActorRef {
+                                actor_id: decision.npc_id.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            reason_packet_id: None,
+                            caused_by: vec![system_event_id.to_string()],
+                            targets: vec![ActorRef {
+                                actor_id: existing.commitment_id.clone(),
+                                actor_kind: "commitment".to_string(),
+                            }],
+                            tags: vec!["commitment".to_string(), "continued".to_string()],
+                            visibility: None,
+                            details: Some(json!({
+                                "commitment_id": existing.commitment_id,
+                                "action_family": existing.action_family,
+                                "progress_ticks": existing.progress_ticks,
+                                "due_tick": existing.due_tick,
+                            })),
+                        };
+                        causal_chain.push(event.event_id.clone());
+                        self.event_log.push(event);
+                        *sequence_in_tick += 1;
+                    }
+                }
+                Some(existing) => {
+                    let urgent_switch = decision_has_emergency_pressure(decision);
+                    let commitment_due = tick >= existing.due_tick;
+                    let switch_allowed =
+                        urgent_switch || commitment_due || existing.inertia_score <= 0;
+                    if !switch_allowed {
+                        existing.progress_ticks = existing.progress_ticks.saturating_add(1);
+                        if existing.progress_ticks == 2 || existing.progress_ticks % 8 == 0 {
+                            let event = Event {
+                                schema_version: SCHEMA_VERSION_V1.to_string(),
+                                run_id: self.status.run_id.clone(),
+                                tick,
+                                created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                                event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                                sequence_in_tick: *sequence_in_tick,
+                                event_type: EventType::CommitmentContinued,
+                                location_id: decision.location_id.clone(),
+                                actors: vec![ActorRef {
+                                    actor_id: decision.npc_id.clone(),
+                                    actor_kind: "npc".to_string(),
+                                }],
+                                reason_packet_id: None,
+                                caused_by: vec![system_event_id.to_string()],
+                                targets: vec![ActorRef {
+                                    actor_id: existing.commitment_id.clone(),
+                                    actor_kind: "commitment".to_string(),
+                                }],
+                                tags: vec!["commitment".to_string(), "continued".to_string()],
+                                visibility: None,
+                                details: Some(json!({
+                                    "commitment_id": existing.commitment_id,
+                                    "action_family": existing.action_family,
+                                    "progress_ticks": existing.progress_ticks,
+                                    "due_tick": existing.due_tick,
+                                    "continuation_mode": "inertia_hold",
+                                })),
+                            };
+                            causal_chain.push(event.event_id.clone());
+                            self.event_log.push(event);
+                            *sequence_in_tick += 1;
+                        }
+                        continue;
+                    }
+                    let broken_id = existing.commitment_id.clone();
+                    let broken_action = existing.action_family.clone();
+                    let matured_commitment =
+                        existing.progress_ticks >= (existing.cadence_ticks / 2).max(1);
+                    let transition_event_type = if commitment_due
+                        || (!urgent_switch && matured_commitment)
+                    {
+                        EventType::CommitmentCompleted
+                    } else {
+                        EventType::CommitmentBroken
+                    };
+                    let transition_tag = if transition_event_type == EventType::CommitmentCompleted
+                    {
+                        "completed"
+                    } else {
+                        "broken"
+                    };
+                    let broken_event = Event {
+                        schema_version: SCHEMA_VERSION_V1.to_string(),
+                        run_id: self.status.run_id.clone(),
+                        tick,
+                        created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                        event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                        sequence_in_tick: *sequence_in_tick,
+                        event_type: transition_event_type,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        reason_packet_id: None,
+                        caused_by: vec![system_event_id.to_string()],
+                        targets: vec![ActorRef {
+                            actor_id: broken_id.clone(),
+                            actor_kind: "commitment".to_string(),
+                        }],
+                        tags: vec!["commitment".to_string(), transition_tag.to_string()],
+                        visibility: None,
+                        details: Some(json!({
+                            "commitment_id": broken_id,
+                            "previous_action_family": broken_action,
+                            "transition_reason": if commitment_due { "due_rotation" } else if urgent_switch { "urgent_switch" } else { "inertia_release" },
+                        })),
+                    };
+                    causal_chain.push(broken_event.event_id.clone());
+                    self.event_log.push(broken_event);
+                    *sequence_in_tick += 1;
+                    *existing = build_commitment_state(tick, &decision.npc_id, &action_family);
+                    let started_event = Event {
+                        schema_version: SCHEMA_VERSION_V1.to_string(),
+                        run_id: self.status.run_id.clone(),
+                        tick,
+                        created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                        event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                        sequence_in_tick: *sequence_in_tick,
+                        event_type: EventType::CommitmentStarted,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        reason_packet_id: None,
+                        caused_by: vec![system_event_id.to_string()],
+                        targets: vec![ActorRef {
+                            actor_id: existing.commitment_id.clone(),
+                            actor_kind: "commitment".to_string(),
+                        }],
+                        tags: vec!["commitment".to_string(), "started".to_string()],
+                        visibility: None,
+                        details: Some(json!({
+                            "commitment_id": existing.commitment_id,
+                            "action_family": existing.action_family,
+                            "due_tick": existing.due_tick,
+                            "inertia_score": existing.inertia_score,
+                        })),
+                    };
+                    causal_chain.push(started_event.event_id.clone());
+                    self.event_log.push(started_event);
+                    *sequence_in_tick += 1;
+                }
+                None => {
+                    let commitment = build_commitment_state(tick, &decision.npc_id, &action_family);
+                    let commitment_id = commitment.commitment_id.clone();
+                    self.commitments_by_npc
+                        .insert(decision.npc_id.clone(), commitment.clone());
+                    let started_event = Event {
+                        schema_version: SCHEMA_VERSION_V1.to_string(),
+                        run_id: self.status.run_id.clone(),
+                        tick,
+                        created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                        event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                        sequence_in_tick: *sequence_in_tick,
+                        event_type: EventType::CommitmentStarted,
+                        location_id: decision.location_id.clone(),
+                        actors: vec![ActorRef {
+                            actor_id: decision.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        reason_packet_id: None,
+                        caused_by: vec![system_event_id.to_string()],
+                        targets: vec![ActorRef {
+                            actor_id: commitment_id,
+                            actor_kind: "commitment".to_string(),
+                        }],
+                        tags: vec!["commitment".to_string(), "started".to_string()],
+                        visibility: None,
+                        details: Some(json!({
+                            "action_family": commitment.action_family,
+                            "due_tick": commitment.due_tick,
+                            "inertia_score": commitment.inertia_score,
+                        })),
+                    };
+                    causal_chain.push(started_event.event_id.clone());
+                    self.event_log.push(started_event);
+                    *sequence_in_tick += 1;
+                }
+            }
+        }
+
+        if tick % 72 == 0 {
+            let npc_ids = self.commitments_by_npc.keys().cloned().collect::<Vec<_>>();
+            for npc_id in npc_ids {
+                let Some(commitment) = self.commitments_by_npc.get(&npc_id) else {
+                    continue;
+                };
+                if commitment.progress_ticks < 48 {
+                    continue;
+                }
+                let completed_id = commitment.commitment_id.clone();
+                let completed_action = commitment.action_family.clone();
+                let completed_event = Event {
+                    schema_version: SCHEMA_VERSION_V1.to_string(),
+                    run_id: self.status.run_id.clone(),
+                    tick,
+                    created_at: synthetic_timestamp(tick, *sequence_in_tick),
+                    event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+                    sequence_in_tick: *sequence_in_tick,
+                    event_type: EventType::CommitmentCompleted,
+                    location_id: self
+                        .npc_location_for(&npc_id)
+                        .unwrap_or_else(|| "region:crownvale".to_string()),
+                    actors: vec![ActorRef {
+                        actor_id: npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    reason_packet_id: None,
+                    caused_by: vec![system_event_id.to_string()],
+                    targets: vec![ActorRef {
+                        actor_id: completed_id,
+                        actor_kind: "commitment".to_string(),
+                    }],
+                    tags: vec!["commitment".to_string(), "completed".to_string()],
+                    visibility: None,
+                    details: Some(json!({
+                        "action_family": completed_action,
+                    })),
+                };
+                causal_chain.push(completed_event.event_id.clone());
+                self.event_log.push(completed_event);
+                *sequence_in_tick += 1;
+                self.commitments_by_npc.remove(&npc_id);
+            }
+        }
+    }
+
+    fn emit_accounting_transfer_summary(
+        &mut self,
+        tick: u64,
+        system_event_id: &str,
+        sequence_in_tick: &mut u64,
+        causal_chain: &mut Vec<String>,
+    ) {
+        let transfer_count = self
+            .accounting_transfers
+            .iter()
+            .filter(|entry| entry.tick == tick)
+            .count();
+        if transfer_count == 0 {
+            return;
+        }
+        let total_amount: i64 = self
+            .accounting_transfers
+            .iter()
+            .filter(|entry| entry.tick == tick)
+            .map(|entry| entry.amount.max(0))
+            .sum();
+        let event = Event {
+            schema_version: SCHEMA_VERSION_V1.to_string(),
+            run_id: self.status.run_id.clone(),
+            tick,
+            created_at: synthetic_timestamp(tick, *sequence_in_tick),
+            event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
+            sequence_in_tick: *sequence_in_tick,
+            event_type: EventType::AccountingTransferRecorded,
+            location_id: "region:crownvale".to_string(),
+            actors: Vec::new(),
+            reason_packet_id: None,
+            caused_by: vec![system_event_id.to_string()],
+            targets: Vec::new(),
+            tags: vec!["accounting".to_string(), "transfer".to_string()],
+            visibility: None,
+            details: Some(json!({
+                "transfer_count": transfer_count,
+                "total_amount": total_amount,
+            })),
+        };
+        causal_chain.push(event.event_id.clone());
+        self.event_log.push(event);
+        *sequence_in_tick += 1;
+    }
+
+    fn record_accounting_transfer(
+        &mut self,
+        tick: u64,
+        settlement_id: &str,
+        from_account: impl Into<String>,
+        to_account: impl Into<String>,
+        resource_kind: impl Into<String>,
+        amount: i64,
+        cause_event_id: Option<String>,
+    ) {
+        if amount <= 0 {
+            return;
+        }
+        let entry = AccountingTransferRuntimeState {
+            transfer_id: format!("acct_{:06}_{}", tick, self.accounting_transfers.len()),
+            tick,
+            settlement_id: settlement_id.to_string(),
+            from_account: from_account.into(),
+            to_account: to_account.into(),
+            resource_kind: resource_kind.into(),
+            amount,
+            cause_event_id,
+        };
+        self.accounting_transfers.push(entry);
+        if self.accounting_transfers.len() > 512 {
+            let overflow = self.accounting_transfers.len() - 512;
+            self.accounting_transfers.drain(0..overflow);
+        }
+    }
+
+    fn normalize_tick_event_ordering(&mut self, tick: u64) {
+        let start = self
+            .event_log
+            .iter()
+            .position(|event| event.tick == tick)
+            .unwrap_or(self.event_log.len());
+        if start >= self.event_log.len() {
+            return;
+        }
+        let end = self.event_log.len();
+        let mut id_map = BTreeMap::<String, String>::new();
+        for (offset, event) in self.event_log[start..end].iter_mut().enumerate() {
+            let old_id = event.event_id.clone();
+            let sequence_in_tick = offset as u64;
+            event.sequence_in_tick = sequence_in_tick;
+            event.event_id = format!("evt_{:06}_{:03}", tick, sequence_in_tick);
+            event.created_at = synthetic_timestamp(tick, sequence_in_tick);
+            id_map.insert(old_id, event.event_id.clone());
+        }
+        for event in &mut self.event_log[start..end] {
+            for cause in &mut event.caused_by {
+                if let Some(remapped) = id_map.get(cause) {
+                    *cause = remapped.clone();
+                }
+            }
         }
     }
 
@@ -1914,7 +3366,62 @@ impl Kernel {
                 if economy.debt_balance > 0 {
                     economy.debt_balance -= 1;
                 }
+                if economy.illness_ticks > 0 {
+                    economy.illness_ticks = (economy.illness_ticks - 1).max(0);
+                } else if economy.health < 95 {
+                    economy.health += 1;
+                }
             }
+            for npc in &mut self.npcs {
+                let Some(economy) = self.npc_economy_by_id.get(&npc.npc_id) else {
+                    continue;
+                };
+                if economy.health <= 55 {
+                    npc.aspiration = "recover_health".to_string();
+                } else if economy.debt_balance >= 5 {
+                    npc.aspiration = "clear_debts".to_string();
+                } else if economy.wallet >= 12 && economy.food_reserve_days >= 3 {
+                    npc.aspiration = "improve_status".to_string();
+                } else if economy.apprenticeship_progress >= 96 {
+                    npc.aspiration = "master_craft".to_string();
+                } else {
+                    npc.aspiration = "stable_household".to_string();
+                }
+
+                if economy.apprenticeship_progress >= 120 {
+                    npc.profession = match npc.profession.as_str() {
+                        "farmhand" => "farmer".to_string(),
+                        "blacksmith" => "master_smith".to_string(),
+                        "carter" => "merchant_caravaner".to_string(),
+                        current => current.to_string(),
+                    };
+                }
+            }
+            for entries in self.observations_by_npc.values_mut() {
+                entries.retain(|entry| entry.tick + 120 >= tick || entry.salience >= 7);
+                if entries.len() > 24 {
+                    let drop = entries.len() - 24;
+                    entries.drain(0..drop);
+                }
+            }
+            self.observations_by_npc
+                .retain(|_, entries| !entries.is_empty());
+            for tension in self.tension_by_pair.values_mut() {
+                tension.anger = step_toward(tension.anger, 0, 2);
+                if tension.losses > 0 {
+                    tension.losses -= 1;
+                }
+                if tension.coin_lost > 0 {
+                    tension.coin_lost -= 1;
+                }
+            }
+            self.tension_by_pair.retain(|_, tension| {
+                tension.anger > 0 || tension.losses > 0 || tension.coin_lost > 0
+            });
+            self.last_bandit_raid_tick_by_settlement
+                .retain(|_, last_tick| last_tick.saturating_add(24 * 14) >= tick);
+            self.settlement_conflict_cooldown_until
+                .retain(|_, cooldown_until| *cooldown_until > tick);
             for market in self.labor_market_by_settlement.values_mut() {
                 market.underemployment_index = (market.underemployment_index - 1).max(0);
             }
@@ -1942,6 +3449,26 @@ impl Kernel {
         if tick % 12 == 0 {
             for route in self.routes_by_id.values_mut() {
                 route.hazard_score = (route.hazard_score - 1).max(0);
+            }
+        }
+
+        if tick % 6 == 0 {
+            for entries in self.opportunities_by_npc.values_mut() {
+                entries.retain(|entry| entry.expires_tick >= tick);
+            }
+            self.opportunities_by_npc
+                .retain(|_, entries| !entries.is_empty());
+        }
+
+        if tick % 24 == 0 {
+            for commitment in self.commitments_by_npc.values_mut() {
+                if commitment.inertia_score > 0 {
+                    commitment.inertia_score -= 1;
+                }
+            }
+            for queue in self.institution_queue_by_settlement.values_mut() {
+                queue.pending_cases = (queue.pending_cases - 1).max(0);
+                queue.avg_response_latency = (queue.avg_response_latency - 1).max(1);
             }
         }
     }
@@ -1991,14 +3518,14 @@ impl Kernel {
                 base.event_type = EventType::CaravanSpawned;
                 base.location_id = origin_settlement_id.clone();
 
-                let transfer = self.select_item_for_route(origin_settlement_id).map(|item_id| {
-                    ItemTransfer {
+                let transfer = self
+                    .select_item_for_route(origin_settlement_id)
+                    .map(|item_id| ItemTransfer {
                         item_id: item_id.clone(),
                         owner_id: "caravan:merchant".to_string(),
                         location_id: destination_settlement_id.clone(),
                         stolen: false,
-                    }
-                });
+                    });
                 if let Some(effect) = transfer.clone() {
                     base.state_effects.item_transfers.push(effect);
                 }
@@ -2035,7 +3562,9 @@ impl Kernel {
                         stolen: false,
                     })
                     .collect::<Vec<_>>();
-                base.state_effects.item_transfers.extend(rehomed_items.clone());
+                base.state_effects
+                    .item_transfers
+                    .extend(rehomed_items.clone());
                 base.details = Some(json!({
                     "command_id": command.command_id,
                     "npc_id": npc_id,
@@ -2198,7 +3727,9 @@ impl Kernel {
                     });
 
                     if tick % 6 == 0 {
-                        if let Some(suspect_id) = self.first_wanted_npc_at_location(&decision.location_id) {
+                        if let Some(suspect_id) =
+                            self.first_wanted_npc_at_location(&decision.location_id)
+                        {
                             planned.push(PlannedEvent {
                                 event_type: EventType::ArrestMade,
                                 location_id: decision.location_id.clone(),
@@ -2341,6 +3872,173 @@ impl Kernel {
                     tags: vec!["social".to_string(), "aid".to_string()],
                     details: Some(json!({
                         "kind": "meal_share",
+                    })),
+                    reason_draft: None,
+                    state_effects: PlannedStateEffects::default(),
+                });
+            }
+            AffordanceVerb::ConverseNeighbor => {
+                let target_id = self
+                    .social_target_for_tick(
+                        &decision.npc_id,
+                        &decision.location_id,
+                        -10,
+                        tick,
+                        "conversation",
+                    )
+                    .unwrap_or_else(|| format!("npc:neighbor:{}", decision.location_id));
+                let topic = self.local_topic_for_npc(
+                    &decision.npc_id,
+                    &decision.location_id,
+                    tick,
+                    "conversation_topic",
+                );
+                planned.push(PlannedEvent {
+                    event_type: EventType::ConversationHeld,
+                    location_id: decision.location_id.clone(),
+                    actors: vec![ActorRef {
+                        actor_id: decision.npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    targets: vec![ActorRef {
+                        actor_id: target_id,
+                        actor_kind: "npc".to_string(),
+                    }],
+                    caused_by: Vec::new(),
+                    tags: vec!["social".to_string(), "conversation".to_string()],
+                    details: Some(json!({
+                        "topic": topic,
+                        "source": "npc_action",
+                    })),
+                    reason_draft: None,
+                    state_effects: PlannedStateEffects::default(),
+                });
+            }
+            AffordanceVerb::LendCoin => {
+                let target_id = self
+                    .social_target_for_tick(
+                        &decision.npc_id,
+                        &decision.location_id,
+                        5,
+                        tick,
+                        "lend_coin",
+                    )
+                    .unwrap_or_else(|| format!("npc:borrower:{}", decision.location_id));
+                let amount = self
+                    .npc_economy_by_id
+                    .get(&decision.npc_id)
+                    .map(|economy| economy.wallet.clamp(1, 2))
+                    .unwrap_or(1);
+                planned.push(PlannedEvent {
+                    event_type: EventType::LoanExtended,
+                    location_id: decision.location_id.clone(),
+                    actors: vec![ActorRef {
+                        actor_id: decision.npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    targets: vec![ActorRef {
+                        actor_id: target_id,
+                        actor_kind: "npc".to_string(),
+                    }],
+                    caused_by: Vec::new(),
+                    tags: vec!["social".to_string(), "loan".to_string()],
+                    details: Some(json!({
+                        "amount": amount,
+                        "currency": "coin",
+                        "source": "npc_action",
+                    })),
+                    reason_draft: None,
+                    state_effects: PlannedStateEffects::default(),
+                });
+            }
+            AffordanceVerb::CourtRomance => {
+                let target_id = self
+                    .social_target_for_tick(
+                        &decision.npc_id,
+                        &decision.location_id,
+                        6,
+                        tick,
+                        "court_romance",
+                    )
+                    .unwrap_or_else(|| format!("npc:court_target:{}", decision.location_id));
+                let (trust, attachment, respect) = self
+                    .relationship_edges
+                    .get(&(decision.npc_id.clone(), target_id.clone()))
+                    .map(|edge| (edge.trust, edge.attachment, edge.respect))
+                    .unwrap_or((0, 0, 0));
+                let stage = if attachment >= 72 && trust >= 52 {
+                    "proposal_signal"
+                } else if attachment >= 44 || trust >= 32 {
+                    "courtship"
+                } else {
+                    "flirtation"
+                };
+                planned.push(PlannedEvent {
+                    event_type: EventType::RomanceAdvanced,
+                    location_id: decision.location_id.clone(),
+                    actors: vec![ActorRef {
+                        actor_id: decision.npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    targets: vec![ActorRef {
+                        actor_id: target_id,
+                        actor_kind: "npc".to_string(),
+                    }],
+                    caused_by: Vec::new(),
+                    tags: vec!["social".to_string(), "romance".to_string()],
+                    details: Some(json!({
+                        "stage": stage,
+                        "trust": trust,
+                        "attachment": attachment,
+                        "respect": respect,
+                        "source": "npc_action",
+                    })),
+                    reason_draft: None,
+                    state_effects: PlannedStateEffects::default(),
+                });
+            }
+            AffordanceVerb::SeekTreatment => {
+                planned.push(PlannedEvent {
+                    event_type: EventType::IllnessRecovered,
+                    location_id: decision.location_id.clone(),
+                    actors: vec![ActorRef {
+                        actor_id: decision.npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    targets: vec![ActorRef {
+                        actor_id: format!("healer:{}", decision.location_id),
+                        actor_kind: "institution".to_string(),
+                    }],
+                    caused_by: Vec::new(),
+                    tags: vec!["health".to_string(), "treatment".to_string()],
+                    details: Some(json!({
+                        "source": "npc_action",
+                        "treatment": "requested",
+                    })),
+                    reason_draft: None,
+                    state_effects: PlannedStateEffects::default(),
+                });
+            }
+            AffordanceVerb::ObserveNotableEvent => {
+                let topic = self.local_topic_for_npc(
+                    &decision.npc_id,
+                    &decision.location_id,
+                    tick,
+                    "observation_topic",
+                );
+                planned.push(PlannedEvent {
+                    event_type: EventType::ObservationLogged,
+                    location_id: decision.location_id.clone(),
+                    actors: vec![ActorRef {
+                        actor_id: decision.npc_id.clone(),
+                        actor_kind: "npc".to_string(),
+                    }],
+                    targets: Vec::new(),
+                    caused_by: Vec::new(),
+                    tags: vec!["social".to_string(), "observation".to_string()],
+                    details: Some(json!({
+                        "topic": topic,
+                        "source": "npc_action",
                     })),
                     reason_draft: None,
                     state_effects: PlannedStateEffects::default(),
@@ -2654,27 +4352,127 @@ impl Kernel {
         sequence_in_tick: &mut u64,
         causal_chain: &mut Vec<String>,
     ) {
-        if !self.deterministic_window_fire(tick, 18, "relationship") || self.npcs.len() < 2 {
+        if !self.deterministic_window_fire(tick, 10, "relationship") || self.npcs.len() < 2 {
             return;
         }
 
-        let actor = &self.npcs[0];
-        let target = &self.npcs[1];
-        let betrayal_pressure = self.pressure_index / 40
-            + self.wanted_npcs.len() as i64
-            + (sum_positive(self.law_case_load_by_settlement.values()) / 5);
-        let betrayal_threshold = (35_i64 + betrayal_pressure).clamp(20, 85) as u64;
-        let roll = self.deterministic_stream(
+        let mut candidates = Vec::<(String, String, String, i64, i64)>::new();
+        for source in &self.npcs {
+            for target in &self.npcs {
+                if source.npc_id >= target.npc_id {
+                    continue;
+                }
+                let Some(edge_ab) = self
+                    .relationship_edges
+                    .get(&(source.npc_id.clone(), target.npc_id.clone()))
+                else {
+                    continue;
+                };
+                let Some(edge_ba) = self
+                    .relationship_edges
+                    .get(&(target.npc_id.clone(), source.npc_id.clone()))
+                else {
+                    continue;
+                };
+                let connected = source.location_id == target.location_id
+                    || self.routes_by_id.values().any(|route| {
+                        ((route.origin_settlement_id == source.location_id
+                            && route.destination_settlement_id == target.location_id)
+                            || (route.origin_settlement_id == target.location_id
+                                && route.destination_settlement_id == source.location_id))
+                            && route.weather_window_open
+                            && route.hazard_score <= 55
+                    });
+                if !connected {
+                    continue;
+                }
+                let pair_key = canonical_pair_key(&source.npc_id, &target.npc_id);
+                let memory = self
+                    .pair_event_memory
+                    .get(&pair_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let recency_penalty = if memory.last_social_tick > 0
+                    && tick.saturating_sub(memory.last_social_tick) < 18
+                {
+                    10
+                } else {
+                    0
+                };
+                let bond = (edge_ab.trust
+                    + edge_ba.trust
+                    + edge_ab.attachment
+                    + edge_ba.attachment
+                    + edge_ab.respect
+                    + edge_ba.respect
+                    - edge_ab.grievance
+                    - edge_ba.grievance)
+                    / 2;
+                let volatility = (edge_ab.grievance
+                    + edge_ba.grievance
+                    + edge_ab.fear
+                    + edge_ba.fear
+                    + edge_ab.jealousy
+                    + edge_ba.jealousy)
+                    / 4;
+                let weight = (12 + (bond.abs() / 5) + volatility / 3 - recency_penalty).clamp(1, 96);
+                candidates.push((
+                    source.npc_id.clone(),
+                    target.npc_id.clone(),
+                    source.location_id.clone(),
+                    bond,
+                    weight,
+                ));
+            }
+        }
+        if candidates.is_empty() {
+            return;
+        }
+        let weights = candidates
+            .iter()
+            .map(|(_, _, _, _, weight)| *weight)
+            .collect::<Vec<_>>();
+        let pick_roll = self.deterministic_stream(
             tick,
             Phase::ActionResolution,
             "relationship",
-            "shift_kind",
-        ) % 100;
-        let (shift_kind, trust_delta) = if roll < betrayal_threshold {
-            ("betrayal", -2_i64)
-        } else {
-            ("cooperation", 2_i64)
+            "pair_pick",
+        );
+        let Some(pair_idx) = pick_weighted_index(pick_roll, &weights) else {
+            return;
         };
+        let (actor_id, target_id, location_id, bond, _) = candidates[pair_idx].clone();
+        let betrayal_pressure = self.pressure_index / 40
+            + self.wanted_npcs.len() as i64
+            + (sum_positive(self.law_case_load_by_settlement.values()) / 5)
+            + (-bond).max(0) / 18;
+        let betrayal_threshold = (28_i64 + betrayal_pressure).clamp(12, 88) as u64;
+        let roll =
+            self.deterministic_stream(tick, Phase::ActionResolution, "relationship", "shift_kind")
+                % 100;
+        let (shift_kind, trust_delta, grievance_delta) = if roll < betrayal_threshold {
+            ("betrayal", -3_i64, 4_i64)
+        } else {
+            ("cooperation", 3_i64, -2_i64)
+        };
+        if let Some(edge) = self
+            .relationship_edges
+            .get_mut(&(actor_id.clone(), target_id.clone()))
+        {
+            edge.trust = (edge.trust + trust_delta).clamp(-100, 100);
+            edge.grievance = (edge.grievance + grievance_delta).clamp(0, 100);
+            edge.recent_interaction_tick = tick;
+        }
+        if let Some(edge) = self
+            .relationship_edges
+            .get_mut(&(target_id.clone(), actor_id.clone()))
+        {
+            edge.trust = (edge.trust + trust_delta / 2).clamp(-100, 100);
+            edge.grievance = (edge.grievance + grievance_delta / 2).clamp(0, 100);
+            edge.recent_interaction_tick = tick;
+        }
+        let memory = self.pair_memory_mut(&actor_id, &target_id);
+        memory.last_social_tick = tick;
         self.social_cohesion = (self.social_cohesion + trust_delta).clamp(-200, 200);
 
         let relationship_event = Event {
@@ -2685,15 +4483,15 @@ impl Kernel {
             event_id: format!("evt_{:06}_{:03}", tick, *sequence_in_tick),
             sequence_in_tick: *sequence_in_tick,
             event_type: EventType::RelationshipShifted,
-            location_id: actor.location_id.clone(),
+            location_id,
             actors: vec![ActorRef {
-                actor_id: actor.npc_id.clone(),
+                actor_id: actor_id.clone(),
                 actor_kind: "npc".to_string(),
             }],
             reason_packet_id: None,
             caused_by: vec![system_event_id.to_string()],
             targets: vec![ActorRef {
-                actor_id: target.npc_id.clone(),
+                actor_id: target_id,
                 actor_kind: "npc".to_string(),
             }],
             tags: vec!["social".to_string(), shift_kind.to_string()],
@@ -2701,6 +4499,7 @@ impl Kernel {
             details: Some(json!({
                 "shift_kind": shift_kind,
                 "trust_delta": trust_delta,
+                "bond_signal": bond,
                 "pressure_index": self.pressure_index,
                 "social_cohesion": self.social_cohesion,
             })),
@@ -2745,12 +4544,9 @@ impl Kernel {
 
         let cycle = (tick - 1) / window;
         let cycle_start_tick = cycle * window + 1;
-        let offset = self.deterministic_stream(
-            cycle + 1,
-            Phase::PreTick,
-            "window_scheduler",
-            channel,
-        ) % window;
+        let offset =
+            self.deterministic_stream(cycle + 1, Phase::PreTick, "window_scheduler", channel)
+                % window;
         tick == cycle_start_tick + offset
     }
 
@@ -2758,7 +4554,8 @@ impl Kernel {
         let node_site = "site:forgotten_waystone";
         let ruin_site = "site:ashen_vault";
         let watch_post = "site:old_watch_post";
-        let roll = self.deterministic_stream(tick, Phase::Perception, location_id, "site_choice") % 100;
+        let roll =
+            self.deterministic_stream(tick, Phase::Perception, location_id, "site_choice") % 100;
 
         if self.pressure_index > 220 || roll > 70 {
             ruin_site.to_string()
@@ -2886,6 +4683,7 @@ impl Kernel {
             sequence_in_tick,
             causal_chain,
         );
+        self.progress_social_dynamics_loop(tick, system_event_id, sequence_in_tick, causal_chain);
         self.progress_institution_group_and_route_loop(
             tick,
             system_event_id,
@@ -2921,40 +4719,101 @@ impl Kernel {
             .collect::<BTreeMap<_, _>>();
         let shelter_seekers = action_by_npc
             .iter()
-            .filter_map(|(npc_id, action)| (action.as_str() == "seek_shelter").then_some(npc_id.clone()))
+            .filter_map(|(npc_id, action)| {
+                (action.as_str() == "seek_shelter").then_some(npc_id.clone())
+            })
             .collect::<BTreeSet<_>>();
         let livelihood_workers = action_by_npc
             .iter()
             .filter_map(|(npc_id, action)| {
-                matches!(action.as_str(), "work_for_food" | "work_for_coin" | "tend_fields")
-                    .then_some(npc_id.clone())
+                matches!(
+                    action.as_str(),
+                    "work_for_food" | "work_for_coin" | "tend_fields"
+                )
+                .then_some(npc_id.clone())
             })
             .collect::<BTreeSet<_>>();
         let rent_contributors = action_by_npc
             .iter()
-            .filter_map(|(npc_id, action)| (action.as_str() == "pay_rent").then_some(npc_id.clone()))
+            .filter_map(|(npc_id, action)| {
+                (action.as_str() == "pay_rent").then_some(npc_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let lenders = action_by_npc
+            .iter()
+            .filter_map(|(npc_id, action)| {
+                (action.as_str() == "lend_coin").then_some(npc_id.clone())
+            })
             .collect::<Vec<_>>();
         for npc_id in rent_contributors {
             let household_id = self
                 .npc_economy_by_id
                 .get(&npc_id)
                 .map(|economy| economy.household_id.clone());
-            let mut contributed = 0_i64;
-            if let Some(economy) = self.npc_economy_by_id.get_mut(&npc_id) {
-                if economy.wallet > 0 {
-                    economy.wallet -= 1;
-                    contributed = 1;
-                }
-            }
-            if contributed > 0 {
-                if let Some(household_id) = household_id {
-                    if let Some(household) = self.households_by_id.get_mut(&household_id) {
-                        let cap = (household.rent_amount * 2).max(4);
-                        household.rent_reserve_coin =
-                            (household.rent_reserve_coin + contributed).min(cap);
+            if let Some(household_id) = household_id {
+                if let Some(household) = self.households_by_id.get_mut(&household_id) {
+                    let target_step = (household.rent_amount / 6).clamp(1, 4);
+                    let mut contributed = 0_i64;
+                    if let Some(economy) = self.npc_economy_by_id.get_mut(&npc_id) {
+                        if economy.wallet > 0 {
+                            contributed = economy.wallet.min(target_step);
+                            economy.wallet -= contributed;
+                        }
                     }
+                    if contributed <= 0 {
+                        continue;
+                    }
+                    let cap = (household.rent_amount * 2).max(4);
+                    household.rent_reserve_coin =
+                        (household.rent_reserve_coin + contributed).min(cap);
+                    self.record_accounting_transfer(
+                        tick,
+                        &self
+                            .npc_location_for(&npc_id)
+                            .unwrap_or_else(|| "settlement:greywall".to_string()),
+                        format!("npc:{npc_id}"),
+                        format!("household_reserve:{household_id}"),
+                        "coin",
+                        contributed,
+                        None,
+                    );
                 }
             }
+        }
+        for lender_id in lenders {
+            let Some(location_id) = self.npc_location_for(&lender_id) else {
+                continue;
+            };
+            let Some(borrower_id) = self.social_target_for(&lender_id, &location_id, 0) else {
+                continue;
+            };
+            let lend_amount = {
+                let Some(lender) = self.npc_economy_by_id.get_mut(&lender_id) else {
+                    continue;
+                };
+                if lender.wallet <= 2 {
+                    continue;
+                }
+                let amount = lender.wallet.saturating_sub(2).min(2);
+                lender.wallet -= amount;
+                amount
+            };
+            if lend_amount <= 0 {
+                continue;
+            }
+            if let Some(borrower) = self.npc_economy_by_id.get_mut(&borrower_id) {
+                borrower.wallet += lend_amount;
+                borrower.debt_balance = (borrower.debt_balance + lend_amount).clamp(0, 40);
+            }
+            self.record_accounting_transfer(
+                tick,
+                &location_id,
+                format!("npc:{lender_id}"),
+                format!("npc:{borrower_id}"),
+                "coin",
+                lend_amount,
+                None,
+            );
         }
 
         if tick % 24 == 0 {
@@ -3004,6 +4863,15 @@ impl Kernel {
                             }
                         }
                         household.shared_pantry_stock += purchased_staples;
+                        self.record_accounting_transfer(
+                            tick,
+                            &settlement_id,
+                            format!("household:{household_id}"),
+                            format!("market:{settlement_id}"),
+                            "coin",
+                            purchased_staples,
+                            None,
+                        );
                     }
                 }
 
@@ -3033,6 +4901,15 @@ impl Kernel {
                             }
                         }
                         household.fuel_stock += purchased_fuel;
+                        self.record_accounting_transfer(
+                            tick,
+                            &settlement_id,
+                            format!("household:{household_id}"),
+                            format!("market:{settlement_id}"),
+                            "coin",
+                            purchased_fuel,
+                            None,
+                        );
                     }
                 }
 
@@ -3041,8 +4918,27 @@ impl Kernel {
                 household.shared_pantry_stock =
                     (household.shared_pantry_stock - pantry_consumed).max(0);
                 household.fuel_stock = (household.fuel_stock - fuel_consumed).max(0);
+                self.record_accounting_transfer(
+                    tick,
+                    &settlement_id,
+                    format!("pantry:{household_id}"),
+                    format!("consumption:{household_id}"),
+                    "staples",
+                    pantry_consumed,
+                    None,
+                );
+                self.record_accounting_transfer(
+                    tick,
+                    &settlement_id,
+                    format!("fuel_store:{household_id}"),
+                    format!("consumption:{household_id}"),
+                    "fuel",
+                    fuel_consumed,
+                    None,
+                );
                 let pantry_shortfall = pantry_need - pantry_consumed;
                 let fuel_shortfall = fuel_need - fuel_consumed;
+                let mut health_transitions = Vec::<(String, EventType, i64, i64, String)>::new();
 
                 for npc_id in &members {
                     let resilience = self
@@ -3050,12 +4946,9 @@ impl Kernel {
                         .get(npc_id)
                         .map(|profile| profile.resilience)
                         .unwrap_or(50);
-                    let recovery_roll = (self.deterministic_stream(
-                        tick,
-                        Phase::Commit,
-                        npc_id,
-                        "shelter_recovery",
-                    ) % 100) as i64;
+                    let recovery_roll =
+                        (self.deterministic_stream(tick, Phase::Commit, npc_id, "shelter_recovery")
+                            % 100) as i64;
                     let chosen_action = action_by_npc.get(npc_id).map(String::as_str);
                     let contractless_work_for_coin = self
                         .npc_economy_by_id
@@ -3072,29 +4965,37 @@ impl Kernel {
                             stock.coin_reserve -= spot_coin_payout;
                         }
                     }
+                    let illness_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        npc_id,
+                        "illness_roll",
+                    ) % 100) as i64;
                     if let Some(economy) = self.npc_economy_by_id.get_mut(npc_id) {
                         if spot_coin_payout > 0 {
                             economy.wallet += spot_coin_payout;
                         }
-                        if matches!(
-                            chosen_action,
-                            Some("tend_fields" | "craft_goods")
-                        ) {
+                        let illness_before = economy.illness_ticks;
+                        let health_before = economy.health;
+                        if matches!(chosen_action, Some("tend_fields" | "craft_goods")) {
                             household.shared_pantry_stock =
                                 (household.shared_pantry_stock + 1).clamp(0, 12);
                         }
                         if matches!(chosen_action, Some("work_for_food")) {
                             household.shared_pantry_stock =
                                 (household.shared_pantry_stock + 1).clamp(0, 12);
-                            economy.food_reserve_days = (economy.food_reserve_days + 2).clamp(0, 14);
+                            economy.food_reserve_days =
+                                (economy.food_reserve_days + 2).clamp(0, 14);
                         }
                         if livelihood_workers.contains(npc_id) {
-                            economy.food_reserve_days = (economy.food_reserve_days + 1).clamp(0, 14);
+                            economy.food_reserve_days =
+                                (economy.food_reserve_days + 1).clamp(0, 14);
                         }
                         if pantry_shortfall > 0 {
                             economy.food_reserve_days = (economy.food_reserve_days - 1).max(0);
                         } else {
-                            economy.food_reserve_days = (economy.food_reserve_days + 1).clamp(0, 14);
+                            economy.food_reserve_days =
+                                (economy.food_reserve_days + 1).clamp(0, 14);
                         }
                         if fuel_shortfall > 0
                             && matches!(economy.shelter_status, ShelterStatus::Stable)
@@ -3112,16 +5013,97 @@ impl Kernel {
                                 }
                             }
                         }
+
+                        let winter_penalty = if self.scenario_state.winter_severity >= 70 {
+                            1
+                        } else {
+                            0
+                        };
+                        let hardship = pantry_shortfall + fuel_shortfall + winter_penalty;
+                        if matches!(chosen_action, Some("seek_treatment")) {
+                            economy.illness_ticks = (economy.illness_ticks - 2).max(0);
+                            economy.health = (economy.health + 4).clamp(20, 100);
+                        }
+                        if economy.illness_ticks == 0 && hardship > 0 {
+                            let illness_threshold =
+                                (12 + hardship * 8 - (resilience / 8)).clamp(6, 55);
+                            if illness_roll < illness_threshold {
+                                economy.illness_ticks = (8 + hardship * 2).clamp(6, 24);
+                                economy.health = (economy.health - (2 + hardship)).clamp(20, 100);
+                                health_transitions.push((
+                                    npc_id.clone(),
+                                    EventType::IllnessContracted,
+                                    economy.health,
+                                    economy.illness_ticks,
+                                    "hardship_exposure".to_string(),
+                                ));
+                            }
+                        } else if economy.illness_ticks > 0 {
+                            let treatment_bonus =
+                                if matches!(chosen_action, Some("seek_treatment")) { 2 } else { 1 };
+                            economy.illness_ticks =
+                                (economy.illness_ticks - treatment_bonus).max(0);
+                            let health_loss = if hardship > 0 { 2 } else { 1 };
+                            economy.health = (economy.health - health_loss).clamp(20, 100);
+                            if economy.illness_ticks == 0 {
+                                economy.health = (economy.health + 3).clamp(20, 100);
+                                health_transitions.push((
+                                    npc_id.clone(),
+                                    EventType::IllnessRecovered,
+                                    economy.health,
+                                    economy.illness_ticks,
+                                    "natural_recovery".to_string(),
+                                ));
+                            }
+                        } else if hardship == 0 {
+                            economy.health = (economy.health + 1).clamp(20, 100);
+                        }
+                        if illness_before != economy.illness_ticks || health_before != economy.health
+                        {
+                            if economy.health <= 35 && economy.illness_ticks > 0 {
+                                health_transitions.push((
+                                    npc_id.clone(),
+                                    EventType::IllnessContracted,
+                                    economy.health,
+                                    economy.illness_ticks,
+                                    "acute_decline".to_string(),
+                                ));
+                            }
+                        }
                     }
                 }
                 if pantry_shortfall > 0 || fuel_shortfall > 0 {
-                    household.eviction_risk_score = (household.eviction_risk_score + 1).clamp(0, 100);
+                    household.eviction_risk_score =
+                        (household.eviction_risk_score + 1).clamp(0, 100);
                 } else {
                     household.eviction_risk_score = (household.eviction_risk_score - 1).max(0);
                 }
                 let pantry_after = household.shared_pantry_stock;
                 let fuel_after = household.fuel_stock;
-                self.households_by_id.insert(household_id.clone(), household);
+                self.households_by_id
+                    .insert(household_id.clone(), household);
+                for (npc_id, event_type, health, illness_ticks, cause) in health_transitions {
+                    self.push_runtime_event(
+                        tick,
+                        sequence_in_tick,
+                        causal_chain,
+                        system_event_id,
+                        event_type,
+                        settlement_id.clone(),
+                        vec![ActorRef {
+                            actor_id: npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        Vec::new(),
+                        vec!["health".to_string()],
+                        Some(json!({
+                            "npc_id": npc_id,
+                            "health": health,
+                            "illness_ticks": illness_ticks,
+                            "cause": cause,
+                        })),
+                    );
+                }
 
                 self.push_runtime_event(
                     tick,
@@ -3231,6 +5213,40 @@ impl Kernel {
             if paid {
                 household.eviction_risk_score = (household.eviction_risk_score - 3).max(0);
                 household.landlord_balance += rent_amount;
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    EventType::RentPaid,
+                    household_id.clone(),
+                    payer_id
+                        .iter()
+                        .map(|payer| ActorRef {
+                            actor_id: payer.clone(),
+                            actor_kind: "npc".to_string(),
+                        })
+                        .collect::<Vec<_>>(),
+                    Vec::new(),
+                    vec!["household".to_string(), "rent_paid".to_string()],
+                    Some(json!({
+                        "household_id": household_id,
+                        "rent_amount": rent_amount,
+                        "reserve_used": reserve_used,
+                        "landlord_balance": household.landlord_balance,
+                    })),
+                );
+                self.record_accounting_transfer(
+                    tick,
+                    &self
+                        .npc_location_for(&members.first().cloned().unwrap_or_default())
+                        .unwrap_or_else(|| "settlement:greywall".to_string()),
+                    format!("household_rent_pool:{household_id}"),
+                    format!("landlord:{household_id}"),
+                    "coin",
+                    rent_amount,
+                    None,
+                );
             } else {
                 household.eviction_risk_score = (household.eviction_risk_score + 2).clamp(0, 100);
                 self.push_runtime_event(
@@ -3261,7 +5277,8 @@ impl Kernel {
             let eviction_risk_score = household.eviction_risk_score;
             let rent_reserve_coin = household.rent_reserve_coin;
             let landlord_balance = household.landlord_balance;
-            self.households_by_id.insert(household_id.clone(), household);
+            self.households_by_id
+                .insert(household_id.clone(), household);
 
             self.push_runtime_event(
                 tick,
@@ -3296,7 +5313,8 @@ impl Kernel {
             }
 
             let payout_roll =
-                self.deterministic_stream(tick, Phase::Commit, &contract_id, "contract_payout") % 100;
+                self.deterministic_stream(tick, Phase::Commit, &contract_id, "contract_payout")
+                    % 100;
             let reliability = u64::from(state.contract.reliability_score);
             let settlement_id = state.contract.settlement_id.clone();
             let worker_id = state.contract.worker_id.clone();
@@ -3319,12 +5337,26 @@ impl Kernel {
                 if let Some(worker) = self.npc_economy_by_id.get_mut(&worker_id) {
                     worker.wallet += wage_amount;
                     worker.debt_balance = (worker.debt_balance - 1).max(0);
-                    worker.apprenticeship_progress = (worker.apprenticeship_progress + 1).clamp(0, 200);
-                    if matches!(state.contract.compensation_type, ContractCompensationType::Board | ContractCompensationType::Mixed) {
+                    worker.apprenticeship_progress =
+                        (worker.apprenticeship_progress + 1).clamp(0, 200);
+                    if matches!(
+                        state.contract.compensation_type,
+                        ContractCompensationType::Board | ContractCompensationType::Mixed
+                    ) {
                         worker.food_reserve_days = (worker.food_reserve_days + 1).clamp(0, 14);
                     }
                 }
-                state.contract.reliability_score = state.contract.reliability_score.saturating_add(1).min(95);
+                state.contract.reliability_score =
+                    state.contract.reliability_score.saturating_add(1).min(95);
+                self.record_accounting_transfer(
+                    tick,
+                    &settlement_id,
+                    format!("employer:{settlement_id}"),
+                    format!("npc:{worker_id}"),
+                    "coin",
+                    wage_amount,
+                    None,
+                );
             } else {
                 delayed = true;
                 if !liquidity_available {
@@ -3438,25 +5470,25 @@ impl Kernel {
             .map(|npc| (npc.npc_id.clone(), npc.location_id.clone()))
             .collect::<Vec<_>>();
         for (idx, (npc_id, location_id)) in unemployed.into_iter().enumerate() {
-            let roll = self.deterministic_stream(tick, Phase::IntentUpdate, &npc_id, "job_seek") % 4;
+            let roll =
+                self.deterministic_stream(tick, Phase::IntentUpdate, &npc_id, "job_seek") % 4;
             if roll != 0 {
                 continue;
             }
-            let market_update = if let Some(market) =
-                self.labor_market_by_settlement.get_mut(&location_id)
-            {
-                if market.open_roles == 0 {
-                    None
+            let market_update =
+                if let Some(market) = self.labor_market_by_settlement.get_mut(&location_id) {
+                    if market.open_roles == 0 {
+                        None
+                    } else {
+                        let open_roles_before = market.open_roles;
+                        let wage = market.wage_band_low.max(1);
+                        market.open_roles = market.open_roles.saturating_sub(1);
+                        market.underemployment_index = (market.underemployment_index - 1).max(0);
+                        Some((open_roles_before, wage))
+                    }
                 } else {
-                    let open_roles_before = market.open_roles;
-                    let wage = market.wage_band_low.max(1);
-                    market.open_roles = market.open_roles.saturating_sub(1);
-                    market.underemployment_index = (market.underemployment_index - 1).max(0);
-                    Some((open_roles_before, wage))
-                }
-            } else {
-                None
-            };
+                    None
+                };
             let Some((open_roles_before, wage)) = market_update else {
                 continue;
             };
@@ -3509,7 +5541,8 @@ impl Kernel {
                 breached: false,
                 next_payment_tick: tick + cadence_interval_ticks(cadence),
             };
-            self.contracts_by_id.insert(contract_id.clone(), ContractState { contract });
+            self.contracts_by_id
+                .insert(contract_id.clone(), ContractState { contract });
             if let Some(economy) = self.npc_economy_by_id.get_mut(&npc_id) {
                 economy.employer_contract_id = Some(contract_id.clone());
             }
@@ -3542,7 +5575,11 @@ impl Kernel {
         sequence_in_tick: &mut u64,
         causal_chain: &mut Vec<String>,
     ) {
-        let node_ids = self.production_nodes_by_id.keys().cloned().collect::<Vec<_>>();
+        let node_ids = self
+            .production_nodes_by_id
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         for node_id in node_ids {
             let Some(mut node) = self.production_nodes_by_id.remove(&node_id) else {
                 continue;
@@ -3552,41 +5589,126 @@ impl Kernel {
             let mut emitted_completed = false;
             let mut emitted_spoilage = None;
 
-            if tick % 12 == 0 {
-                node.input_backlog += 1;
+            let (demand_signal, storage_pressure) = self
+                .stock_by_settlement
+                .get(&location_id)
+                .map(|stock| match node.node_kind.as_str() {
+                    "farm" => {
+                        let demand = if stock.staples <= 8 {
+                            3
+                        } else if stock.staples <= 14 {
+                            2
+                        } else if stock.staples <= 24 {
+                            1
+                        } else {
+                            0
+                        };
+                        let pressure = (stock.staples - 32).max(0);
+                        (demand, pressure)
+                    }
+                    "workshop" => {
+                        let demand = if stock.craft_inputs <= 8 {
+                            2
+                        } else if stock.craft_inputs <= 16 {
+                            1
+                        } else {
+                            0
+                        };
+                        let pressure = (stock.craft_inputs - 48).max(0);
+                        (demand, pressure)
+                    }
+                    _ => {
+                        let demand = if stock.fuel <= 5 {
+                            2
+                        } else if stock.fuel <= 12 {
+                            1
+                        } else {
+                            0
+                        };
+                        let pressure = (stock.fuel - 40).max(0);
+                        (demand, pressure)
+                    }
+                })
+                .unwrap_or((1, 0));
+
+            if tick % 12 == 0 && demand_signal > 0 {
+                node.input_backlog = (node.input_backlog + demand_signal.min(2)).clamp(0, 10);
                 emitted_start = true;
             }
             if node.input_backlog > 0 && tick % 6 == 0 {
-                node.input_backlog -= 1;
-                node.output_backlog += 1;
+                let transform = (1 + demand_signal / 2).clamp(1, 2);
+                let transformed = node.input_backlog.min(transform);
+                node.input_backlog -= transformed;
+                node.output_backlog = (node.output_backlog + transformed).clamp(0, 10);
             }
             if node.output_backlog > 0 && tick % 8 == 0 {
-                let completed_output = node.output_backlog;
+                let completed_output = node.output_backlog.min((1 + demand_signal).clamp(1, 3));
                 if let Some(stock) = self.stock_by_settlement.get_mut(&location_id) {
                     match node.node_kind.as_str() {
-                        "farm" => stock.staples += completed_output * 2,
-                        "workshop" => stock.craft_inputs += completed_output + 1,
-                        _ => stock.fuel += completed_output + 1,
+                        "farm" => {
+                            let gain = completed_output * if demand_signal >= 2 { 2 } else { 1 };
+                            stock.staples += gain;
+                        }
+                        "workshop" => stock.craft_inputs += completed_output,
+                        _ => stock.fuel += completed_output,
                     }
                 }
-                node.output_backlog = 0;
-                emitted_completed = true;
+                node.output_backlog = (node.output_backlog - completed_output).max(0);
+                emitted_completed = completed_output > 0;
+            }
+            if storage_pressure > 0 && node.output_backlog > 0 {
+                node.output_backlog = (node.output_backlog - 1).max(0);
             }
             node.spoilage_timer -= 1;
             if node.spoilage_timer <= 0 {
-                let mut staples_after = None;
+                let mut resource_after = None;
+                let mut resource_kind = "staples";
+                let mut amount_lost = 0_i64;
                 if let Some(stock) = self.stock_by_settlement.get_mut(&location_id) {
-                    if stock.staples > 0 {
-                        stock.staples -= 1;
-                        staples_after = Some(stock.staples);
+                    match node.node_kind.as_str() {
+                        "farm" => {
+                            let overflow = (stock.staples - 30).max(0);
+                            amount_lost = (1 + overflow / 24).clamp(0, stock.staples.max(0));
+                            stock.staples -= amount_lost;
+                            resource_after = Some(stock.staples);
+                            resource_kind = "staples";
+                        }
+                        "workshop" => {
+                            let overflow = (stock.craft_inputs - 44).max(0);
+                            amount_lost = (1 + overflow / 28).clamp(0, stock.craft_inputs.max(0));
+                            stock.craft_inputs -= amount_lost;
+                            resource_after = Some(stock.craft_inputs);
+                            resource_kind = "craft_inputs";
+                        }
+                        _ => {
+                            let overflow = (stock.fuel - 36).max(0);
+                            amount_lost = (1 + overflow / 24).clamp(0, stock.fuel.max(0));
+                            stock.fuel -= amount_lost;
+                            resource_after = Some(stock.fuel);
+                            resource_kind = "fuel";
+                        }
                     }
                 }
-                node.spoilage_timer = 18;
-                emitted_spoilage = staples_after;
+                if let Some(remaining) = resource_after {
+                    if amount_lost > 0 {
+                        self.record_accounting_transfer(
+                            tick,
+                            &location_id,
+                            format!("stock:{location_id}"),
+                            format!("spoilage:{location_id}"),
+                            resource_kind,
+                            amount_lost,
+                            None,
+                        );
+                    }
+                    emitted_spoilage = Some(remaining);
+                }
+                node.spoilage_timer = if storage_pressure > 0 { 12 } else { 18 };
             }
 
             let input_backlog = node.input_backlog;
-            self.production_nodes_by_id.insert(node_id.clone(), node.clone());
+            self.production_nodes_by_id
+                .insert(node_id.clone(), node.clone());
 
             if emitted_start {
                 self.push_runtime_event(
@@ -3627,7 +5749,7 @@ impl Kernel {
                     })),
                 );
             }
-            if let Some(staples_after) = emitted_spoilage {
+            if let Some(resource_remaining) = emitted_spoilage {
                 self.push_runtime_event(
                     tick,
                     sequence_in_tick,
@@ -3642,7 +5764,7 @@ impl Kernel {
                     Vec::new(),
                     vec!["production".to_string(), "spoilage".to_string()],
                     Some(json!({
-                        "staples_after": staples_after,
+                        "resource_remaining": resource_remaining,
                     })),
                 );
             }
@@ -3674,6 +5796,24 @@ impl Kernel {
                     }
                 }
                 if imported_staples > 0 || imported_fuel > 0 {
+                    self.record_accounting_transfer(
+                        tick,
+                        &settlement_id,
+                        format!("route_network:{settlement_id}"),
+                        format!("stock:{settlement_id}"),
+                        "staples",
+                        imported_staples,
+                        None,
+                    );
+                    self.record_accounting_transfer(
+                        tick,
+                        &settlement_id,
+                        format!("route_network:{settlement_id}"),
+                        format!("stock:{settlement_id}"),
+                        "fuel",
+                        imported_fuel,
+                        None,
+                    );
                     self.push_runtime_event(
                         tick,
                         sequence_in_tick,
@@ -3692,13 +5832,110 @@ impl Kernel {
                         })),
                     );
                 }
+
+                let mut overstock_staples = 0_i64;
+                let mut overstock_fuel = 0_i64;
+                let mut overstock_inputs = 0_i64;
+                let mut maintenance_fee = 0_i64;
+                if let Some(stock) = self.stock_by_settlement.get_mut(&settlement_id) {
+                    let staples_cap = 36 + route_support * 2;
+                    let fuel_cap = 28 + route_support;
+                    let inputs_cap = 44 + route_support * 2;
+                    if stock.staples > staples_cap {
+                        let overflow = stock.staples - staples_cap;
+                        overstock_staples = (overflow / 3).max(1).min(stock.staples);
+                        stock.staples -= overstock_staples;
+                    }
+                    if stock.fuel > fuel_cap {
+                        let overflow = stock.fuel - fuel_cap;
+                        overstock_fuel = (overflow / 3).max(1).min(stock.fuel);
+                        stock.fuel -= overstock_fuel;
+                    }
+                    if stock.craft_inputs > inputs_cap {
+                        let overflow = stock.craft_inputs - inputs_cap;
+                        overstock_inputs = (overflow / 4).max(1).min(stock.craft_inputs);
+                        stock.craft_inputs -= overstock_inputs;
+                    }
+                    let volume =
+                        stock.staples.max(0) + stock.fuel.max(0) + stock.craft_inputs.max(0);
+                    maintenance_fee = (volume / 120).clamp(0, 4).min(stock.coin_reserve.max(0));
+                    stock.coin_reserve -= maintenance_fee;
+                }
+                if overstock_staples > 0 || overstock_fuel > 0 || overstock_inputs > 0 {
+                    if overstock_staples > 0 {
+                        self.record_accounting_transfer(
+                            tick,
+                            &settlement_id,
+                            format!("stock:{settlement_id}"),
+                            format!("overstock_decay:{settlement_id}"),
+                            "staples",
+                            overstock_staples,
+                            None,
+                        );
+                    }
+                    if overstock_fuel > 0 {
+                        self.record_accounting_transfer(
+                            tick,
+                            &settlement_id,
+                            format!("stock:{settlement_id}"),
+                            format!("overstock_decay:{settlement_id}"),
+                            "fuel",
+                            overstock_fuel,
+                            None,
+                        );
+                    }
+                    if overstock_inputs > 0 {
+                        self.record_accounting_transfer(
+                            tick,
+                            &settlement_id,
+                            format!("stock:{settlement_id}"),
+                            format!("overstock_decay:{settlement_id}"),
+                            "craft_inputs",
+                            overstock_inputs,
+                            None,
+                        );
+                    }
+                    self.push_runtime_event(
+                        tick,
+                        sequence_in_tick,
+                        causal_chain,
+                        system_event_id,
+                        EventType::SpoilageOccurred,
+                        settlement_id.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        vec!["supply".to_string(), "overstock_decay".to_string()],
+                        Some(json!({
+                            "settlement_id": settlement_id,
+                            "staples_lost": overstock_staples,
+                            "fuel_lost": overstock_fuel,
+                            "craft_inputs_lost": overstock_inputs,
+                        })),
+                    );
+                }
+                if maintenance_fee > 0 {
+                    self.record_accounting_transfer(
+                        tick,
+                        &settlement_id,
+                        format!("stock:{settlement_id}"),
+                        format!("maintenance:{settlement_id}"),
+                        "coin",
+                        maintenance_fee,
+                        None,
+                    );
+                }
             }
             let Some((staples, price_pressure, shortage, recovered)) = ({
                 if let Some(stock) = self.stock_by_settlement.get_mut(&settlement_id) {
                     stock.local_price_pressure = (14 - stock.staples).clamp(-10, 30);
                     let staples = stock.staples;
                     let price_pressure = stock.local_price_pressure;
-                    Some((staples, price_pressure, staples <= 4, staples >= 10 && tick % 24 == 0))
+                    Some((
+                        staples,
+                        price_pressure,
+                        staples <= 4,
+                        staples >= 10 && tick % 24 == 0,
+                    ))
                 } else {
                     None
                 }
@@ -3739,6 +5976,75 @@ impl Kernel {
                     })),
                 );
             }
+
+            if tick % 24 == 0 {
+                let (shortage_score, wage_pressure, unmet_demand, market_cleared, prices) = self
+                    .stock_by_settlement
+                    .get(&settlement_id)
+                    .map(|stock| {
+                        let shortage_score = ((6 - stock.staples).max(0)
+                            + (3 - stock.fuel).max(0)
+                            + (2 - stock.medicine).max(0))
+                        .clamp(0, 24);
+                        let wage_pressure = self
+                            .labor_market_by_settlement
+                            .get(&settlement_id)
+                            .map(|market| (market.underemployment_index / 8).clamp(0, 20))
+                            .unwrap_or(0);
+                        let unmet_demand = (shortage_score + wage_pressure / 2).clamp(0, 30);
+                        let market_cleared = shortage_score <= 6 && unmet_demand <= 8;
+                        let staples_price_index = 100 + shortage_score * 4;
+                        let fuel_price_index = 100 + (shortage_score * 3 / 2);
+                        let medicine_price_index = 100 + (shortage_score * 5 / 2);
+                        (
+                            shortage_score,
+                            wage_pressure,
+                            unmet_demand,
+                            market_cleared,
+                            (staples_price_index, fuel_price_index, medicine_price_index),
+                        )
+                    })
+                    .unwrap_or((0, 0, 0, true, (100, 100, 100)));
+
+                self.market_clearing_by_settlement.insert(
+                    settlement_id.clone(),
+                    MarketClearingRuntimeState {
+                        settlement_id: settlement_id.clone(),
+                        staples_price_index: prices.0,
+                        fuel_price_index: prices.1,
+                        medicine_price_index: prices.2,
+                        wage_pressure,
+                        shortage_score,
+                        unmet_demand,
+                        cleared_tick: tick,
+                        market_cleared,
+                    },
+                );
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    if market_cleared {
+                        EventType::MarketCleared
+                    } else {
+                        EventType::MarketFailed
+                    },
+                    settlement_id.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec!["market".to_string(), "clearing".to_string()],
+                    Some(json!({
+                        "settlement_id": settlement_id,
+                        "shortage_score": shortage_score,
+                        "wage_pressure": wage_pressure,
+                        "unmet_demand": unmet_demand,
+                        "staples_price_index": prices.0,
+                        "fuel_price_index": prices.1,
+                        "medicine_price_index": prices.2,
+                    })),
+                );
+            }
         }
     }
 
@@ -3751,13 +6057,13 @@ impl Kernel {
     ) {
         let edge_keys = self.relationship_edges.keys().cloned().collect::<Vec<_>>();
         if !edge_keys.is_empty() {
-            let updates = edge_keys.len().min(2);
+            let updates = (edge_keys.len() / 96).clamp(4, 48);
             let start = tick as usize % edge_keys.len();
             for offset in 0..updates {
                 let key = edge_keys[(start + offset) % edge_keys.len()].clone();
                 let Some(mut edge) = self.relationship_edges.remove(&key) else {
-                continue;
-            };
+                    continue;
+                };
                 let household_stress = self
                     .npc_economy_by_id
                     .get(&edge.source_npc_id)
@@ -3778,7 +6084,9 @@ impl Kernel {
                 let trait_support = self
                     .npc_traits_by_id
                     .get(&edge.source_npc_id)
-                    .map(|profile| (profile.empathy + profile.sociability + profile.dutifulness - 150) / 44)
+                    .map(|profile| {
+                        (profile.empathy + profile.sociability + profile.dutifulness - 150) / 44
+                    })
                     .unwrap_or(0);
                 let shared_group = self.groups_by_id.values().any(|group| {
                     group
@@ -3800,6 +6108,11 @@ impl Kernel {
                         .get(&edge.target_npc_id)
                         .map(|state| state.food_reserve_days <= 1 || state.debt_balance >= 4)
                         .unwrap_or(false)) as i64;
+                let reverse_trust = self
+                    .relationship_edges
+                    .get(&(edge.target_npc_id.clone(), edge.source_npc_id.clone()))
+                    .map(|reverse| reverse.trust)
+                    .unwrap_or(0);
                 let source_action = self
                     .event_log
                     .iter()
@@ -3814,7 +6127,8 @@ impl Kernel {
                                 .unwrap_or(false)
                     })
                     .and_then(|event| {
-                        event.details
+                        event
+                            .details
                             .as_ref()
                             .and_then(|details| details.get("chosen_action"))
                             .and_then(Value::as_str)
@@ -3824,8 +6138,10 @@ impl Kernel {
                     Some(
                         "share_meal"
                             | "mediate_dispute"
-                            | "assist_neighbor"
+                            | "converse_neighbor"
+                            | "lend_coin"
                             | "work_for_food"
+                            | "court_romance"
                             | "form_mutual_aid_group"
                     )
                 ) as i64
@@ -3835,14 +6151,12 @@ impl Kernel {
                     Some("steal_supplies" | "spread_accusation" | "avoid_patrols" | "fence_goods")
                 ) as i64
                     * 2;
-                let volatility = (self
-                    .deterministic_stream(
-                        tick,
-                        Phase::MemoryBelief,
-                        &edge.source_npc_id,
-                        &edge.target_npc_id,
-                    )
-                    % 5) as i64
+                let volatility = (self.deterministic_stream(
+                    tick,
+                    Phase::MemoryBelief,
+                    &edge.source_npc_id,
+                    &edge.target_npc_id,
+                ) % 5) as i64
                     - 2;
                 let trust_saturation = (edge.trust.max(0) / 20).clamp(0, 5);
                 let baseline_drift = if tick % 24 == 0 {
@@ -3856,19 +6170,19 @@ impl Kernel {
                 } else {
                     0
                 };
-                let net_pressure =
-                    social_pressure + household_stress - trust_buffer + volatility + antisocial_bias
-                        - cooperative_bias
-                        - trait_support
-                        - compatibility_bias
-                        - shared_group
-                        - shared_hardship
-                        + trust_saturation
-                        + baseline_drift;
-                let delta = if net_pressure >= 4 {
+                let net_pressure = social_pressure + household_stress - trust_buffer
+                    + volatility
+                    + antisocial_bias
+                    - cooperative_bias
+                    - trait_support
+                    - compatibility_bias
+                    - shared_group
+                    - shared_hardship
+                    + trust_saturation
+                    + baseline_drift;
+                let mut delta = if net_pressure >= 3 {
                     -1
-                } else if net_pressure <= -3
-                    && edge.trust < (58 + compatibility_bias.clamp(-4, 4))
+                } else if net_pressure <= -2 && edge.trust < (58 + compatibility_bias.clamp(-4, 4))
                 {
                     1
                 } else if cooperative_bias >= 2 && volatility <= -1 && edge.trust < 60 {
@@ -3882,12 +6196,23 @@ impl Kernel {
                 } else {
                     0
                 };
+                if delta > 0 && reverse_trust <= -35 {
+                    delta = 0;
+                } else if delta < 0 && reverse_trust >= 45 {
+                    delta = 0;
+                }
 
                 if delta != 0 {
-                    let trust_step = if net_pressure.abs() >= 6 { 2 } else { 1 };
+                    let trust_step = if net_pressure.abs() >= 8 {
+                        3
+                    } else if net_pressure.abs() >= 5 {
+                        2
+                    } else {
+                        1
+                    };
                     edge.trust = (edge.trust + delta * trust_step).clamp(-100, 100);
                     edge.grievance =
-                        (edge.grievance + if delta < 0 { 2 } else { -2 }).clamp(0, 100);
+                        (edge.grievance + if delta < 0 { 3 } else { -2 }).clamp(0, 100);
                     edge.obligation =
                         (edge.obligation + if delta > 0 { 1 } else { -2 }).clamp(0, 100);
                     edge.attachment =
@@ -3973,40 +6298,28 @@ impl Kernel {
                         );
                     }
                 } else if tick % 24 == 0 {
-                    if edge.trust > 20 {
-                        edge.trust -= 1;
-                    }
-                    edge.obligation = (edge.obligation - 1).max(0);
-                    edge.attachment = (edge.attachment - 1).max(0);
-                    edge.grievance = (edge.grievance - 1).max(0);
-                    let location = self
-                        .npc_location_for(&edge.source_npc_id)
-                        .unwrap_or_else(|| "region:crownvale".to_string());
-                    self.push_runtime_event(
-                        tick,
-                        sequence_in_tick,
-                        causal_chain,
-                        system_event_id,
-                        EventType::TrustChanged,
-                        location,
-                        vec![ActorRef {
-                            actor_id: edge.source_npc_id.clone(),
-                            actor_kind: "npc".to_string(),
-                        }],
-                        vec![ActorRef {
-                            actor_id: edge.target_npc_id.clone(),
-                            actor_kind: "npc".to_string(),
-                        }],
-                        vec!["social".to_string(), "trust".to_string(), "stagnant".to_string()],
-                        Some(json!({
-                            "trust": edge.trust,
-                            "obligation": edge.obligation,
-                            "grievance": edge.grievance,
-                            "net_pressure": net_pressure,
-                            "stagnant": true,
-                            "trust_level": format!("{:?}", trust_level_from_score(edge.trust)),
-                        })),
+                    let trust_target = (edge.compatibility_score / 2 + shared_group * 6
+                        - (household_stress / 3)
+                        + (reverse_trust / 8))
+                        .clamp(-35, 55);
+                    edge.trust = step_toward(
+                        edge.trust,
+                        trust_target,
+                        if edge.trust.abs() >= 70 { 2 } else { 1 },
                     );
+                    let obligation_target = if edge.trust > 20 {
+                        (10 + edge.trust / 4).clamp(6, 40)
+                    } else {
+                        0
+                    };
+                    let grievance_target = if edge.trust < -15 {
+                        ((-edge.trust) / 3).clamp(4, 40)
+                    } else {
+                        0
+                    };
+                    edge.obligation = step_toward(edge.obligation, obligation_target, 2);
+                    edge.attachment = step_toward(edge.attachment, obligation_target / 2, 2);
+                    edge.grievance = step_toward(edge.grievance, grievance_target, 2);
                 }
                 self.relationship_edges.insert(key, edge);
             }
@@ -4034,7 +6347,9 @@ impl Kernel {
                 .cloned();
             let institution_correction = institution
                 .as_ref()
-                .map(|entry| (100 - entry.bias_level - entry.corruption_level).clamp(0, 80) as f32 / 2000.0)
+                .map(|entry| {
+                    (100 - entry.bias_level - entry.corruption_level).clamp(0, 80) as f32 / 2000.0
+                })
                 .unwrap_or(0.0);
             let (emitted_confidence, emitted_distortion, emitted_willingness) = {
                 let claims = self.beliefs_by_npc.entry(npc.npc_id.clone()).or_default();
@@ -4052,7 +6367,7 @@ impl Kernel {
                         .clamp(0.0, 1.0);
                     existing.willingness_to_share = (existing.willingness_to_share
                         + if rumor_heat > 2 { 0.025 } else { -0.02 })
-                        .clamp(0.0, 1.0);
+                    .clamp(0.0, 1.0);
                     event_type = EventType::BeliefUpdated;
                     (
                         existing.confidence,
@@ -4126,12 +6441,32 @@ impl Kernel {
                     })),
                 );
             }
-            if self
+            let (trusted_links, hostile_links) = self
+                .relationship_edges
+                .values()
+                .filter(|edge| edge.source_npc_id == npc.npc_id)
+                .fold((0_i64, 0_i64), |(trusted, hostile), edge| {
+                    (
+                        trusted + (edge.trust >= 20) as i64,
+                        hostile + (edge.trust <= -20) as i64,
+                    )
+                });
+            let institution_bias = self
                 .institutions_by_settlement
                 .get(&npc.location_id)
-                .map(|institution| institution.bias_level >= 60)
-                .unwrap_or(false)
-                && rumor_heat > 1
+                .map(|institution| institution.bias_level)
+                .unwrap_or(0);
+            let institution_corruption = self
+                .institutions_by_settlement
+                .get(&npc.location_id)
+                .map(|institution| institution.corruption_level)
+                .unwrap_or(0);
+            let contested_signal = emitted_distortion >= 0.28
+                || (emitted_confidence >= 0.25
+                    && emitted_confidence <= 0.78
+                    && hostile_links > trusted_links);
+            if contested_signal
+                && (rumor_heat > 0 || institution_bias >= 30 || institution_corruption >= 35)
             {
                 self.push_runtime_event(
                     tick,
@@ -4148,6 +6483,10 @@ impl Kernel {
                     vec!["belief".to_string(), "disputed".to_string()],
                     Some(json!({
                         "claim_id": claim_id,
+                        "trusted_links": trusted_links,
+                        "hostile_links": hostile_links,
+                        "institution_bias": institution_bias,
+                        "institution_corruption": institution_corruption,
                     })),
                 );
             }
@@ -4170,6 +6509,1262 @@ impl Kernel {
                         "claim_id": forgotten,
                     })),
                 );
+            }
+        }
+    }
+
+    fn progress_social_dynamics_loop(
+        &mut self,
+        tick: u64,
+        system_event_id: &str,
+        sequence_in_tick: &mut u64,
+        causal_chain: &mut Vec<String>,
+    ) {
+        let settlements = self
+            .npcs
+            .iter()
+            .map(|npc| npc.location_id.clone())
+            .collect::<BTreeSet<_>>();
+        let recent_events = self
+            .event_log
+            .iter()
+            .rev()
+            .take(512)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for settlement_id in settlements {
+            let nearby_locations = self
+                .routes_by_id
+                .values()
+                .filter(|route| route.weather_window_open && route.hazard_score <= 60)
+                .filter_map(|route| {
+                    if route.origin_settlement_id == settlement_id {
+                        Some(route.destination_settlement_id.clone())
+                    } else if route.destination_settlement_id == settlement_id {
+                        Some(route.origin_settlement_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+            let local_npcs = self
+                .npcs
+                .iter()
+                .filter(|npc| {
+                    npc.location_id == settlement_id
+                        || nearby_locations.contains(&npc.location_id)
+                })
+                .map(|npc| npc.npc_id.clone())
+                .collect::<Vec<_>>();
+            if local_npcs.len() < 2 {
+                continue;
+            }
+            let interaction_npcs = local_npcs
+                .iter()
+                .filter(|npc_id| {
+                    let sociability = self
+                        .npc_traits_by_id
+                        .get(*npc_id)
+                        .map(|profile| profile.sociability)
+                        .unwrap_or(50);
+                    let resident_bonus = self
+                        .npc_location_for(npc_id)
+                        .map(|location| (location == settlement_id) as i64 * 24)
+                        .unwrap_or(0);
+                    let presence_threshold = (12 + sociability / 2 + resident_bonus).clamp(12, 72);
+                    let presence_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "social_presence",
+                        &format!("{settlement_id}:{npc_id}"),
+                    ) % 100) as i64;
+                    presence_roll < presence_threshold
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let thefts_recent = recent_events
+                .iter()
+                .filter(|event| {
+                    event.location_id == settlement_id
+                        && event.event_type == EventType::TheftCommitted
+                })
+                .count() as i64;
+            let conflicts_recent = recent_events
+                .iter()
+                .filter(|event| {
+                    event.location_id == settlement_id
+                        && matches!(
+                            event.event_type,
+                            EventType::InsultExchanged
+                                | EventType::PunchThrown
+                                | EventType::BrawlStarted
+                        )
+                })
+                .count() as i64;
+            let conflict_cooldown_active = self
+                .settlement_conflict_cooldown_until
+                .get(&settlement_id)
+                .map(|until| tick < *until)
+                .unwrap_or(false);
+
+            let rumor_heat = self
+                .scenario_state
+                .rumor_heat_by_location
+                .get(&settlement_id)
+                .copied()
+                .unwrap_or(0)
+                .max(0);
+            let civic_energy = interaction_npcs.len() as i64
+                + rumor_heat
+                + thefts_recent * 2
+                + conflicts_recent * 2;
+            if civic_energy >= 14 {
+                let civic_key = format!("{settlement_id}:civic");
+                let last_civic_tick = self
+                    .last_social_channel_tick
+                    .get(&civic_key)
+                    .copied()
+                    .unwrap_or(0);
+                let civic_gap = tick.saturating_sub(last_civic_tick);
+                if civic_gap >= 18 {
+                    let civic_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "civic_signal",
+                        &settlement_id,
+                    ) % 100) as i64;
+                    let civic_threshold =
+                        (8 + civic_energy / 3 - (civic_gap / 24) as i64).clamp(6, 34);
+                    if civic_roll < civic_threshold {
+                        let is_festival = civic_energy >= 22
+                            || self.deterministic_stream(
+                                tick,
+                                Phase::Commit,
+                                "civic_flavor",
+                                &settlement_id,
+                            ) % 3
+                                == 0;
+                        let (topic, actor_id, tags) = if is_festival {
+                            (
+                                "seasonal_festival",
+                                format!("festival_host:{settlement_id}"),
+                                vec!["civic".to_string(), "festival".to_string()],
+                            )
+                        } else {
+                            (
+                                "mayor_tour",
+                                format!("mayor:{settlement_id}"),
+                                vec!["civic".to_string(), "mayor_tour".to_string()],
+                            )
+                        };
+                        self.push_runtime_event(
+                            tick,
+                            sequence_in_tick,
+                            causal_chain,
+                            system_event_id,
+                            EventType::ObservationLogged,
+                            settlement_id.clone(),
+                            vec![ActorRef {
+                                actor_id,
+                                actor_kind: "institution".to_string(),
+                            }],
+                            Vec::new(),
+                            tags,
+                            Some(json!({
+                                "topic": topic,
+                                "attendance_estimate": interaction_npcs.len(),
+                                "civic_energy": civic_energy,
+                            })),
+                        );
+                        self.last_social_channel_tick.insert(civic_key, tick);
+                    }
+                }
+            }
+            let bandit_phase = self.deterministic_stream(
+                0,
+                Phase::Commit,
+                "bandit_activity_phase",
+                &settlement_id,
+            ) % 24;
+            let last_raid_tick = self
+                .last_bandit_raid_tick_by_settlement
+                .get(&settlement_id)
+                .copied()
+                .unwrap_or(0);
+            let raid_cooldown_ticks = (24 * 5) as u64;
+            let bandit_roll = (self.deterministic_stream(
+                tick,
+                Phase::Commit,
+                "bandit_activity",
+                &settlement_id,
+            ) % 100) as i64;
+            let bandit_threshold = (2
+                + (self.pressure_index / 140).clamp(0, 4)
+                + (thefts_recent / 5).clamp(0, 3)
+                + (conflicts_recent / 7).clamp(0, 2))
+                .clamp(2, 10);
+            if tick % 24 == bandit_phase
+                && tick.saturating_sub(last_raid_tick) >= raid_cooldown_ticks
+                && bandit_roll < bandit_threshold
+            {
+                let victim_owner = format!("store:{settlement_id}");
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    EventType::TheftCommitted,
+                    settlement_id.clone(),
+                    vec![ActorRef {
+                        actor_id: format!("bandit:{}", settlement_id.replace(':', "_")),
+                        actor_kind: "bandit".to_string(),
+                    }],
+                    vec![ActorRef {
+                        actor_id: victim_owner.clone(),
+                        actor_kind: "owner".to_string(),
+                    }],
+                    vec!["bandit".to_string(), "raid".to_string()],
+                    Some(json!({
+                        "item_id": format!("loot:{}:{tick}", settlement_id.replace(':', "_")),
+                        "from_owner_id": victim_owner,
+                        "to_owner_id": "bandit_group",
+                        "wanted": true,
+                        "source": "bandit_activity",
+                    })),
+                );
+                apply_case_delta(&mut self.law_case_load_by_settlement, &settlement_id, 1);
+                self.last_bandit_raid_tick_by_settlement
+                    .insert(settlement_id.clone(), tick);
+            }
+
+            let theft_candidates = interaction_npcs
+                .iter()
+                .filter_map(|npc_id| {
+                    let economy = self.npc_economy_by_id.get(npc_id)?;
+                    let traits = self.npc_traits_by_id.get(npc_id)?;
+                    if self.wanted_npcs.contains(npc_id)
+                        || self.npc_holds_stolen_item(npc_id)
+                        || economy.wallet > 5
+                    {
+                        return None;
+                    }
+                    let household_pressure = self
+                        .households_by_id
+                        .get(&economy.household_id)
+                        .map(|household| household.eviction_risk_score / 14)
+                        .unwrap_or(0);
+                    let trust_support = self
+                        .relationship_edges
+                        .values()
+                        .filter(|edge| edge.source_npc_id == *npc_id && edge.trust >= 22)
+                        .count() as i64;
+                    let hardship = economy.debt_balance
+                        + (2 - economy.food_reserve_days).max(0) * 2
+                        + household_pressure;
+                    let pull = hardship * 3
+                        + traits.risk_tolerance / 5
+                        + traits.ambition / 8
+                        - traits.empathy / 10
+                        - trust_support * 3
+                        - thefts_recent * 3;
+                    if pull < 18 {
+                        return None;
+                    }
+                    let recent_theft_penalty = self
+                        .action_memory_by_npc
+                        .get(npc_id)
+                        .and_then(|memory| memory.last_theft_tick)
+                        .map(|last| {
+                            if tick.saturating_sub(last) < 96 {
+                                34
+                            } else {
+                                0
+                            }
+                        })
+                        .unwrap_or(0);
+                    let weight = (pull - recent_theft_penalty).clamp(0, 96);
+                    (weight > 0).then_some((npc_id.clone(), weight))
+                })
+                .collect::<Vec<_>>();
+            let last_global_theft_tick = self
+                .last_social_channel_tick
+                .get("global:theft")
+                .copied()
+                .unwrap_or(0);
+            if !theft_candidates.is_empty()
+                && thefts_recent <= 2
+                && tick.saturating_sub(last_global_theft_tick) >= 24
+            {
+                let weights = theft_candidates
+                    .iter()
+                    .map(|(_, weight)| *weight)
+                    .collect::<Vec<_>>();
+                let pick_roll = self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "npc_theft_candidate",
+                    &settlement_id,
+                );
+                if let Some(idx) = pick_weighted_index(pick_roll, &weights) {
+                    let thief_id = theft_candidates[idx].0.clone();
+                    let theft_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "npc_theft_trigger",
+                        &format!("{settlement_id}:{thief_id}"),
+                    ) % 100) as i64;
+                    let theft_threshold = (1 + theft_candidates[idx].1 / 14 - thefts_recent * 2)
+                        .clamp(1, 8);
+                    if theft_roll < theft_threshold {
+                        let (item_id, from_owner_id) =
+                            self.select_item_for_theft(&settlement_id, &thief_id, tick);
+                        self.item_registry.insert(
+                            item_id.clone(),
+                            ItemRecord {
+                                owner_id: thief_id.clone(),
+                                location_id: settlement_id.clone(),
+                                stolen: true,
+                                last_moved_tick: tick,
+                            },
+                        );
+                        self.wanted_npcs.insert(thief_id.clone());
+                        apply_case_delta(&mut self.law_case_load_by_settlement, &settlement_id, 2);
+                        self.push_runtime_event(
+                            tick,
+                            sequence_in_tick,
+                            causal_chain,
+                            system_event_id,
+                            EventType::TheftCommitted,
+                            settlement_id.clone(),
+                            vec![ActorRef {
+                                actor_id: thief_id.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec![ActorRef {
+                                actor_id: from_owner_id.clone(),
+                                actor_kind: "owner".to_string(),
+                            }],
+                            vec!["crime".to_string(), "theft".to_string(), "opportunistic".to_string()],
+                            Some(json!({
+                                "item_id": item_id,
+                                "from_owner_id": from_owner_id,
+                                "to_owner_id": thief_id,
+                                "source": "social_dynamics",
+                                "theft_threshold": theft_threshold,
+                            })),
+                        );
+                        self.last_social_channel_tick
+                            .insert("global:theft".to_string(), tick);
+                        self.last_social_channel_tick
+                            .insert(format!("{settlement_id}:theft"), tick);
+                        let memory = self.action_memory_by_npc.entry(thief_id).or_default();
+                        memory.last_theft_tick = Some(tick);
+                    }
+                }
+            }
+
+            let recent_brawlers = recent_events
+                .iter()
+                .filter(|event| {
+                    event.location_id == settlement_id
+                        && event.tick + 24 >= tick
+                        && matches!(event.event_type, EventType::PunchThrown | EventType::BrawlStarted)
+                })
+                .filter_map(|event| event.actors.first().map(|actor| actor.actor_id.clone()))
+                .collect::<BTreeSet<_>>();
+
+            if interaction_npcs.len() >= 2 {
+                let game_phase = self.deterministic_stream(
+                    0,
+                    Phase::Commit,
+                    "tavern_game_phase",
+                    &settlement_id,
+                ) % 24;
+                if tick % 24 == game_phase {
+                    let mut game_pairs = Vec::<(String, String, i64)>::new();
+                    for (left_idx, left) in interaction_npcs.iter().enumerate() {
+                        for right in interaction_npcs.iter().skip(left_idx + 1) {
+                            let left_profile = self.npc_traits_by_id.get(left);
+                            let right_profile = self.npc_traits_by_id.get(right);
+                            let left_hobbies = self
+                                .npcs
+                                .iter()
+                                .find(|npc| npc.npc_id == *left)
+                                .map(|npc| npc.hobbies.clone())
+                                .unwrap_or_default();
+                            let right_hobbies = self
+                                .npcs
+                                .iter()
+                                .find(|npc| npc.npc_id == *right)
+                                .map(|npc| npc.hobbies.clone())
+                                .unwrap_or_default();
+                            let shared_hobby = left_hobbies
+                                .iter()
+                                .any(|hobby| right_hobbies.iter().any(|other| other == hobby));
+                            let pair_key = canonical_pair_key(left, right);
+                            let memory = self
+                                .pair_event_memory
+                                .get(&pair_key)
+                                .cloned()
+                                .unwrap_or_default();
+                            let recency_penalty = if memory.last_social_tick > 0
+                                && tick.saturating_sub(memory.last_social_tick) < 12
+                            {
+                                10
+                            } else {
+                                0
+                            };
+                            let sociability = left_profile.map(|p| p.sociability).unwrap_or(50)
+                                + right_profile.map(|p| p.sociability).unwrap_or(50);
+                            let weight = (8 + sociability / 10 + (shared_hobby as i64) * 8 - recency_penalty)
+                                .clamp(1, 88);
+                            game_pairs.push((left.clone(), right.clone(), weight));
+                        }
+                    }
+                    let weights = game_pairs
+                        .iter()
+                        .map(|(_, _, weight)| *weight)
+                        .collect::<Vec<_>>();
+                    let pair_roll = self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "tavern_game_pair",
+                        &settlement_id,
+                    );
+                    let Some(pair_idx) = pick_weighted_index(pair_roll, &weights) else {
+                        continue;
+                    };
+                    let (left, right, _) = game_pairs[pair_idx].clone();
+                    let outcome_roll = self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "tavern_game_outcome",
+                        &format!("{left}:{right}"),
+                    ) % 100;
+                    let left_skill = self
+                        .npc_traits_by_id
+                        .get(&left)
+                        .map(|profile| profile.patience + profile.sociability / 2)
+                        .unwrap_or(60);
+                    let right_skill = self
+                        .npc_traits_by_id
+                        .get(&right)
+                        .map(|profile| profile.patience + profile.sociability / 2)
+                        .unwrap_or(60);
+                    let left_threshold = (50 + (left_skill - right_skill) / 3).clamp(20, 80) as u64;
+                    let (winner, loser) = if outcome_roll < left_threshold {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    if winner != loser {
+                        let stake = 1
+                            + (self.deterministic_stream(
+                                tick,
+                                Phase::Commit,
+                                "tavern_game_stake",
+                                &format!("{winner}:{loser}"),
+                            ) % 3) as i64;
+                        let transfer = if let Some(loser_state) = self.npc_economy_by_id.get_mut(&loser)
+                        {
+                            let paid = loser_state.wallet.max(0).min(stake);
+                            loser_state.wallet -= paid;
+                            paid
+                        } else {
+                            0
+                        };
+                        if transfer > 0 {
+                            if let Some(winner_state) = self.npc_economy_by_id.get_mut(&winner) {
+                                winner_state.wallet += transfer;
+                            }
+                            self.record_accounting_transfer(
+                                tick,
+                                &settlement_id,
+                                format!("npc:{loser}"),
+                                format!("npc:{winner}"),
+                                "coin",
+                                transfer,
+                                None,
+                            );
+                        }
+                        self.push_runtime_event(
+                            tick,
+                            sequence_in_tick,
+                            causal_chain,
+                            system_event_id,
+                            EventType::ConversationHeld,
+                            settlement_id.clone(),
+                            vec![ActorRef {
+                                actor_id: winner.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec![ActorRef {
+                                actor_id: loser.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec!["social".to_string(), "tavern_game".to_string()],
+                            Some(json!({
+                                "topic": "tavern_game_round",
+                                "winner_id": winner,
+                                "loser_id": loser,
+                                "stake_coin": transfer,
+                            })),
+                        );
+                        let tension_key = (loser.clone(), winner.clone());
+                        let tension = self.tension_by_pair.entry(tension_key).or_default();
+                        tension.losses = (tension.losses + 1).clamp(0, 30);
+                        tension.coin_lost = (tension.coin_lost + transfer).clamp(0, 80);
+                        let anger_bump = 1 + (transfer / 2) + (tension.losses / 5);
+                        tension.anger = (tension.anger + anger_bump).clamp(0, 100);
+                        tension.last_tick = tick;
+                        if let Some(edge) = self
+                            .relationship_edges
+                            .get_mut(&(loser.clone(), winner.clone()))
+                        {
+                            edge.trust = (edge.trust - 1 - transfer / 2).clamp(-100, 100);
+                            edge.grievance = (edge.grievance + 1 + transfer / 2).clamp(0, 100);
+                            edge.recent_interaction_tick = tick;
+                        }
+                        if let Some(edge) = self
+                            .relationship_edges
+                            .get_mut(&(winner.clone(), loser.clone()))
+                        {
+                            edge.respect = (edge.respect + 1).clamp(0, 100);
+                            edge.recent_interaction_tick = tick;
+                        }
+                        let memory = self.pair_memory_mut(&winner, &loser);
+                        memory.last_social_tick = tick;
+                    }
+                }
+            }
+
+            let mut hostile_pairs = Vec::<(String, String, i64, i64)>::new();
+            for source in &interaction_npcs {
+                for target in &interaction_npcs {
+                    if source == target {
+                        continue;
+                    }
+                    if let Some(edge) = self.relationship_edges.get(&(source.clone(), target.clone()))
+                    {
+                        let pair_tension = self
+                            .tension_by_pair
+                            .get(&(source.clone(), target.clone()))
+                            .cloned()
+                            .unwrap_or_default();
+                        let hostility = (edge.grievance
+                            + edge.fear
+                            + pair_tension.anger
+                            + pair_tension.losses
+                            + pair_tension.coin_lost / 2
+                            - edge.trust)
+                            .clamp(0, 140);
+                        let pair_key = canonical_pair_key(source, target);
+                        let memory = self
+                            .pair_event_memory
+                            .get(&pair_key)
+                            .cloned()
+                            .unwrap_or_default();
+                        let recency_penalty = if memory.last_conflict_tick > 0 {
+                            if tick.saturating_sub(memory.last_conflict_tick) < 24 {
+                                18
+                            } else if tick.saturating_sub(memory.last_conflict_tick) < 72 {
+                                8
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+                        let weight = (hostility - recency_penalty).clamp(0, 140);
+                        if weight >= 12 {
+                            hostile_pairs.push((source.clone(), target.clone(), hostility, weight));
+                        }
+                    }
+                }
+            }
+
+            let hostile_weights = hostile_pairs
+                .iter()
+                .map(|(_, _, _, weight)| *weight)
+                .collect::<Vec<_>>();
+            let hostile_pick = pick_weighted_index(
+                self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "social_conflict_pair",
+                    &settlement_id,
+                ),
+                &hostile_weights,
+            );
+            if let Some((aggressor, target, hostility, _)) =
+                hostile_pick.and_then(|idx| hostile_pairs.get(idx).cloned())
+            {
+                let profile = self.npc_traits_by_id.get(&aggressor).cloned();
+                let aggression = profile.as_ref().map(|entry| entry.aggression).unwrap_or(50);
+                let patience = profile.as_ref().map(|entry| entry.patience).unwrap_or(50);
+                let cooldown = (recent_brawlers.contains(&aggressor) as i64) * 22;
+                let trigger_roll = (self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "social_conflict_trigger",
+                    &format!("{settlement_id}:{aggressor}:{target}"),
+                ) % 100) as i64;
+                let stress_pressure = (conflicts_recent / 4) + (thefts_recent / 6);
+                let personality_push = ((aggression - patience).max(0)) / 16;
+                let mut trigger_threshold =
+                    (2 + hostility / 12 + stress_pressure / 2 + personality_push - cooldown / 10)
+                        .clamp(1, 18);
+                if conflict_cooldown_active {
+                    trigger_threshold = trigger_threshold.min(1);
+                }
+                if trigger_roll < trigger_threshold {
+                    self.push_runtime_event(
+                        tick,
+                        sequence_in_tick,
+                        causal_chain,
+                        system_event_id,
+                        EventType::InsultExchanged,
+                        settlement_id.clone(),
+                        vec![ActorRef {
+                            actor_id: aggressor.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec![ActorRef {
+                            actor_id: target.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec!["conflict".to_string(), "verbal".to_string()],
+                        Some(json!({
+                            "hostility_score": hostility,
+                            "trigger_threshold": trigger_threshold,
+                        })),
+                    );
+
+                    if let Some(edge) =
+                        self.relationship_edges.get_mut(&(aggressor.clone(), target.clone()))
+                    {
+                        edge.trust = (edge.trust - 4).clamp(-100, 100);
+                        edge.grievance = (edge.grievance + 6).clamp(0, 100);
+                        edge.recent_interaction_tick = tick;
+                    }
+                    if let Some(reverse) =
+                        self.relationship_edges.get_mut(&(target.clone(), aggressor.clone()))
+                    {
+                        reverse.fear = (reverse.fear + 4).clamp(0, 100);
+                        reverse.trust = (reverse.trust - 2).clamp(-100, 100);
+                        reverse.recent_interaction_tick = tick;
+                    }
+                    let memory = self.pair_memory_mut(&aggressor, &target);
+                    memory.last_conflict_tick = tick;
+                    memory.last_social_tick = tick;
+
+                    let escalation_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "social_conflict_escalation",
+                        &format!("{aggressor}:{target}"),
+                    ) % 100) as i64;
+                    let escalation_score = ((aggression - patience) / 2).max(-12)
+                        + hostility / 4
+                        + conflicts_recent
+                        - cooldown / 2
+                        + escalation_roll / 12;
+                    if escalation_score >= 42 {
+                        self.push_runtime_event(
+                            tick,
+                            sequence_in_tick,
+                            causal_chain,
+                            system_event_id,
+                            EventType::PunchThrown,
+                            settlement_id.clone(),
+                            vec![ActorRef {
+                                actor_id: aggressor.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec![ActorRef {
+                                actor_id: target.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec!["conflict".to_string(), "physical".to_string()],
+                            Some(json!({
+                                "escalation_score": escalation_score,
+                            })),
+                        );
+
+                        let ally_count = interaction_npcs
+                            .iter()
+                            .filter(|npc_id| {
+                                self.relationship_edges
+                                    .get(&(aggressor.clone(), (*npc_id).clone()))
+                                    .map(|edge| edge.trust >= 26)
+                                    .unwrap_or(false)
+                                    || self
+                                        .relationship_edges
+                                        .get(&(target.clone(), (*npc_id).clone()))
+                                        .map(|edge| edge.trust >= 26)
+                                        .unwrap_or(false)
+                            })
+                            .count() as i64;
+                        let brawl = escalation_score >= 56 || ally_count >= 3;
+                        if brawl {
+                            self.push_runtime_event(
+                                tick,
+                                sequence_in_tick,
+                                causal_chain,
+                                system_event_id,
+                                EventType::BrawlStarted,
+                                settlement_id.clone(),
+                                vec![ActorRef {
+                                    actor_id: aggressor.clone(),
+                                    actor_kind: "npc".to_string(),
+                                }],
+                                vec![ActorRef {
+                                    actor_id: target.clone(),
+                                    actor_kind: "npc".to_string(),
+                                }],
+                                vec!["conflict".to_string(), "brawl".to_string()],
+                                Some(json!({
+                                    "participants_estimate": (2 + ally_count).clamp(2, 8),
+                                    "escalation_score": escalation_score,
+                                })),
+                            );
+                            apply_case_delta(&mut self.law_case_load_by_settlement, &settlement_id, 2);
+                            self.settlement_conflict_cooldown_until
+                                .insert(settlement_id.clone(), tick + 24);
+                        } else {
+                            apply_case_delta(&mut self.law_case_load_by_settlement, &settlement_id, 1);
+                            self.settlement_conflict_cooldown_until
+                                .insert(settlement_id.clone(), tick + 12);
+                        }
+
+                        let dispatch_roll = (self.deterministic_stream(
+                            tick,
+                            Phase::Commit,
+                            "guard_dispatch",
+                            &settlement_id,
+                        ) % 100) as i64;
+                        if brawl || dispatch_roll < 45 {
+                            self.push_runtime_event(
+                                tick,
+                                sequence_in_tick,
+                                causal_chain,
+                                system_event_id,
+                                EventType::GuardsDispatched,
+                                settlement_id.clone(),
+                                vec![ActorRef {
+                                    actor_id: format!("guard_unit:{settlement_id}"),
+                                    actor_kind: "institution".to_string(),
+                                }],
+                                vec![ActorRef {
+                                    actor_id: aggressor.clone(),
+                                    actor_kind: "npc".to_string(),
+                                }],
+                                vec!["institution".to_string(), "response".to_string()],
+                                Some(json!({
+                                    "dispatch_roll": dispatch_roll,
+                                    "brawl": brawl,
+                                })),
+                            );
+                            if dispatch_roll < 30 {
+                                self.wanted_npcs.insert(aggressor.clone());
+                            }
+                            if brawl && (dispatch_roll < 60 || conflicts_recent >= 2) {
+                                self.push_runtime_event(
+                                    tick,
+                                    sequence_in_tick,
+                                    causal_chain,
+                                    system_event_id,
+                                    EventType::ObservationLogged,
+                                    settlement_id.clone(),
+                                    vec![ActorRef {
+                                        actor_id: format!("bailiff:{settlement_id}"),
+                                        actor_kind: "institution".to_string(),
+                                    }],
+                                    Vec::new(),
+                                    vec!["institution".to_string(), "incident_report".to_string()],
+                                    Some(json!({
+                                        "topic": "incident_report_filed",
+                                        "escalation": if brawl { "brawl" } else { "fight" },
+                                        "dispatch_roll": dispatch_roll,
+                                    })),
+                                );
+                            }
+                        }
+
+                        for bystander in &interaction_npcs {
+                            if bystander == &aggressor || bystander == &target {
+                                continue;
+                            }
+                            let profile = self.npc_traits_by_id.get(bystander).cloned();
+                            let aggression_b = profile.as_ref().map(|p| p.aggression).unwrap_or(50);
+                            let empathy_b = profile.as_ref().map(|p| p.empathy).unwrap_or(50);
+                            let dutiful_b = profile.as_ref().map(|p| p.dutifulness).unwrap_or(50);
+                            let reaction_roll = (self.deterministic_stream(
+                                tick,
+                                Phase::Commit,
+                                "bystander_reaction",
+                                &format!("{settlement_id}:{bystander}:{aggressor}:{target}"),
+                            ) % 100) as i64;
+                            if reaction_roll < ((empathy_b + dutiful_b) / 4).clamp(12, 40) {
+                                self.push_runtime_event(
+                                    tick,
+                                    sequence_in_tick,
+                                    causal_chain,
+                                    system_event_id,
+                                    EventType::ConversationHeld,
+                                    settlement_id.clone(),
+                                    vec![ActorRef {
+                                        actor_id: bystander.clone(),
+                                        actor_kind: "npc".to_string(),
+                                    }],
+                                    vec![ActorRef {
+                                        actor_id: aggressor.clone(),
+                                        actor_kind: "npc".to_string(),
+                                    }],
+                                    vec!["conflict".to_string(), "mediation".to_string()],
+                                    Some(json!({
+                                        "topic": "break_up_fight",
+                                    })),
+                                );
+                            } else if reaction_roll
+                                < ((aggression_b - empathy_b + 35) / 5).clamp(5, 20)
+                            {
+                                self.push_runtime_event(
+                                    tick,
+                                    sequence_in_tick,
+                                    causal_chain,
+                                    system_event_id,
+                                    EventType::PunchThrown,
+                                    settlement_id.clone(),
+                                    vec![ActorRef {
+                                        actor_id: bystander.clone(),
+                                        actor_kind: "npc".to_string(),
+                                    }],
+                                    vec![ActorRef {
+                                        actor_id: aggressor.clone(),
+                                        actor_kind: "npc".to_string(),
+                                    }],
+                                    vec!["conflict".to_string(), "bystander_join".to_string()],
+                                    Some(json!({
+                                        "escalation_score": escalation_score,
+                                    })),
+                                );
+                            } else {
+                                self.push_runtime_event(
+                                    tick,
+                                    sequence_in_tick,
+                                    causal_chain,
+                                    system_event_id,
+                                    EventType::ObservationLogged,
+                                    settlement_id.clone(),
+                                    vec![ActorRef {
+                                        actor_id: bystander.clone(),
+                                        actor_kind: "npc".to_string(),
+                                    }],
+                                    Vec::new(),
+                                    vec!["conflict".to_string(), "crowd_watch".to_string()],
+                                    Some(json!({
+                                        "topic": "watching_fight",
+                                        "source": "bystander",
+                                    })),
+                                );
+                            }
+                        }
+
+                        self.push_runtime_event(
+                            tick,
+                            sequence_in_tick,
+                            causal_chain,
+                            system_event_id,
+                            EventType::BrawlStopped,
+                            settlement_id.clone(),
+                            vec![ActorRef {
+                                actor_id: aggressor.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec![ActorRef {
+                                actor_id: target.clone(),
+                                actor_kind: "npc".to_string(),
+                            }],
+                            vec!["conflict".to_string(), "resolution".to_string()],
+                            Some(json!({
+                                "resolution": if brawl { "guard_intervention" } else { "self_limited" },
+                            })),
+                        );
+                        if let Some(tension) = self
+                            .tension_by_pair
+                            .get_mut(&(aggressor.clone(), target.clone()))
+                        {
+                            tension.anger = (tension.anger - 18).max(0);
+                            tension.losses = (tension.losses - 2).max(0);
+                            tension.last_tick = tick;
+                        }
+                        if let Some(tension) = self
+                            .tension_by_pair
+                            .get_mut(&(target.clone(), aggressor.clone()))
+                        {
+                            tension.anger = (tension.anger - 10).max(0);
+                            tension.last_tick = tick;
+                        }
+                    }
+                }
+            }
+
+            let mut bond_pairs = Vec::<(String, String, i64, i64)>::new();
+            for left in &interaction_npcs {
+                for right in &interaction_npcs {
+                    if left == right {
+                        continue;
+                    }
+                    if let Some(edge) = self.relationship_edges.get(&(left.clone(), right.clone())) {
+                        let bond = (edge.trust + edge.attachment + edge.respect - edge.grievance)
+                            .clamp(-100, 200);
+                        if bond >= 36 {
+                            let pair_key = canonical_pair_key(left, right);
+                            let memory = self
+                                .pair_event_memory
+                                .get(&pair_key)
+                                .cloned()
+                                .unwrap_or_default();
+                            let recency_penalty = if memory.last_romance_tick > 0 {
+                                if tick.saturating_sub(memory.last_romance_tick) < 48 {
+                                    14
+                                } else if tick.saturating_sub(memory.last_romance_tick) < 120 {
+                                    6
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
+                            let weight = (bond / 3 + 12 - recency_penalty).clamp(1, 88);
+                            bond_pairs.push((left.clone(), right.clone(), bond, weight));
+                        }
+                    }
+                }
+            }
+            let romance_weights = bond_pairs
+                .iter()
+                .map(|(_, _, _, weight)| *weight)
+                .collect::<Vec<_>>();
+            let romance_pick = pick_weighted_index(
+                self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "romance_pair",
+                    &settlement_id,
+                ),
+                &romance_weights,
+            );
+            if let Some((source, target, bond, _)) =
+                romance_pick.and_then(|idx| bond_pairs.get(idx).cloned())
+            {
+                let romance_drive = self
+                    .npc_traits_by_id
+                    .get(&source)
+                    .map(|profile| profile.romance_drive)
+                    .unwrap_or(50);
+                let romance_roll = (self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "romance_progression",
+                    &format!("{source}:{target}:{settlement_id}"),
+                ) % 100) as i64;
+                let romance_threshold = (5 + bond / 10 + romance_drive / 22 - conflicts_recent).clamp(4, 26);
+                if romance_roll < romance_threshold {
+                    let wedding_roll = (self.deterministic_stream(
+                        tick,
+                        Phase::Commit,
+                        "wedding_gate",
+                        &format!("{source}:{target}"),
+                    ) % 100) as i64;
+                    let stage = if bond >= 90 && wedding_roll < 18 {
+                        "wedding"
+                    } else {
+                        "courtship"
+                    };
+                    self.push_runtime_event(
+                        tick,
+                        sequence_in_tick,
+                        causal_chain,
+                        system_event_id,
+                        EventType::RomanceAdvanced,
+                        settlement_id.clone(),
+                        vec![ActorRef {
+                            actor_id: source.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec![ActorRef {
+                            actor_id: target.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec!["social".to_string(), "romance".to_string()],
+                        Some(json!({
+                            "bond_score": bond,
+                            "romance_threshold": romance_threshold,
+                            "stage": stage,
+                        })),
+                    );
+                    if let Some(edge) = self.relationship_edges.get_mut(&(source.clone(), target.clone()))
+                    {
+                        edge.trust = (edge.trust + 2).clamp(-100, 100);
+                        edge.attachment = (edge.attachment + 3).clamp(0, 100);
+                    }
+                    if let Some(edge) = self
+                        .relationship_edges
+                        .get_mut(&(target.clone(), source.clone()))
+                    {
+                        edge.trust = (edge.trust + 1).clamp(-100, 100);
+                        edge.attachment = (edge.attachment + 2).clamp(0, 100);
+                    }
+                    let memory = self.pair_memory_mut(&source, &target);
+                    memory.last_romance_tick = tick;
+                    memory.last_social_tick = tick;
+                }
+            }
+        }
+
+        let notable = self
+            .event_log
+            .iter()
+            .filter(|event| event.tick == tick)
+            .filter(|event| {
+                matches!(
+                    event.event_type,
+                    EventType::TheftCommitted
+                        | EventType::ArrestMade
+                        | EventType::InsultExchanged
+                        | EventType::PunchThrown
+                        | EventType::BrawlStarted
+                        | EventType::GuardsDispatched
+                        | EventType::StockShortage
+                        | EventType::MarketFailed
+                        | EventType::StockRecovered
+                        | EventType::MarketCleared
+                        | EventType::RomanceAdvanced
+                        | EventType::ConversationHeld
+                        | EventType::CaravanSpawned
+                        | EventType::NpcActionCommitted
+                )
+            })
+            .filter(|event| {
+                if event.event_type != EventType::NpcActionCommitted {
+                    return true;
+                }
+                matches!(
+                    event
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("chosen_action"))
+                        .and_then(Value::as_str),
+                    Some(
+                        "converse_neighbor"
+                            | "lend_coin"
+                            | "court_romance"
+                            | "steal_supplies"
+                            | "pay_rent"
+                            | "seek_treatment"
+                            | "trade_visit"
+                    )
+                )
+            })
+            .map(|event| {
+                (
+                    event.event_id.clone(),
+                    event.location_id.clone(),
+                    event.event_type,
+                    event.tags.clone(),
+                    event.details.clone(),
+                    event
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("chosen_action"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                )
+            })
+            .collect::<Vec<_>>();
+        if notable.is_empty() {
+            return;
+        }
+
+        let npcs = self.npcs.clone();
+        for npc in npcs {
+            let nearby_locations = self
+                .routes_by_id
+                .values()
+                .filter(|route| route.weather_window_open && route.hazard_score <= 60)
+                .filter_map(|route| {
+                    if route.origin_settlement_id == npc.location_id {
+                        Some(route.destination_settlement_id.clone())
+                    } else if route.destination_settlement_id == npc.location_id {
+                        Some(route.origin_settlement_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+            let local_notable = notable
+                .iter()
+                .filter(|(_, location_id, _, _, _, _)| {
+                    location_id == &npc.location_id || nearby_locations.contains(location_id)
+                })
+                .collect::<Vec<_>>();
+            if local_notable.is_empty() {
+                continue;
+            }
+            let profile = self.npc_traits_by_id.get(&npc.npc_id).cloned();
+            let awareness_threshold = 28
+                + profile.as_ref().map(|entry| entry.sociability / 4).unwrap_or(10)
+                + profile.as_ref().map(|entry| entry.gossip_drive / 5).unwrap_or(10);
+            let awareness_roll = (self.deterministic_stream(
+                tick,
+                Phase::Commit,
+                "observation_awareness",
+                &npc.npc_id,
+            ) % 100) as i64;
+            if awareness_roll > awareness_threshold.clamp(12, 72) {
+                continue;
+            }
+
+            let notable_weights = local_notable
+                .iter()
+                .map(|(_, _, event_type, _, _, _)| match event_type {
+                    EventType::BrawlStarted | EventType::ArrestMade => 18,
+                    EventType::PunchThrown | EventType::TheftCommitted => 16,
+                    EventType::GuardsDispatched => 14,
+                    EventType::StockShortage | EventType::MarketFailed => 13,
+                    EventType::RomanceAdvanced => 11,
+                    EventType::ConversationHeld => 8,
+                    EventType::StockRecovered | EventType::MarketCleared => 7,
+                    EventType::NpcActionCommitted => 6,
+                    _ => 5,
+                })
+                .collect::<Vec<_>>();
+            let idx = pick_weighted_index(
+                self.deterministic_stream(
+                    tick,
+                    Phase::Commit,
+                    "observation_pick",
+                    &npc.npc_id,
+                ),
+                &notable_weights,
+            )
+            .unwrap_or(0);
+            let (source_event_id, _, source_event_type, source_tags, source_details, chosen_action) =
+                local_notable[idx];
+            let topic = observation_topic_for_event(
+                *source_event_type,
+                source_tags,
+                source_details.as_ref(),
+                chosen_action.as_deref(),
+            );
+            let salience = match source_event_type {
+                EventType::BrawlStarted | EventType::ArrestMade => 9,
+                EventType::PunchThrown | EventType::TheftCommitted => 8,
+                EventType::StockShortage | EventType::MarketFailed => 7,
+                EventType::RomanceAdvanced => 6,
+                EventType::GuardsDispatched => 8,
+                EventType::ConversationHeld => 5,
+                EventType::StockRecovered | EventType::MarketCleared => 5,
+                EventType::NpcActionCommitted => 5,
+                _ => 5,
+            };
+            let memory = ObservationRuntime {
+                tick,
+                location_id: npc.location_id.clone(),
+                topic: topic.clone(),
+                salience,
+                source_event_id: source_event_id.clone(),
+            };
+            let entry = self.observations_by_npc.entry(npc.npc_id.clone()).or_default();
+            if let Some(previous) = entry.last() {
+                let min_gap = if salience >= 8 { 3 } else { 8 };
+                if previous.topic == topic && tick.saturating_sub(previous.tick) < 18 {
+                    continue;
+                }
+                if tick.saturating_sub(previous.tick) < min_gap {
+                    continue;
+                }
+            }
+            entry.push(memory);
+            if entry.len() > 24 {
+                entry.remove(0);
+            }
+
+            self.push_runtime_event(
+                tick,
+                sequence_in_tick,
+                causal_chain,
+                system_event_id,
+                EventType::ObservationLogged,
+                npc.location_id.clone(),
+                vec![ActorRef {
+                    actor_id: npc.npc_id.clone(),
+                    actor_kind: "npc".to_string(),
+                }],
+                Vec::new(),
+                vec!["social".to_string(), "observation".to_string()],
+                Some(json!({
+                    "topic": topic,
+                    "salience": salience,
+                    "source_event_id": source_event_id,
+                    "source_tags": source_tags,
+                    "source_action": chosen_action,
+                })),
+            );
+
+            let gossip_drive = profile.as_ref().map(|entry| entry.gossip_drive).unwrap_or(40);
+            let share_roll = (self.deterministic_stream(
+                tick,
+                Phase::Commit,
+                "observation_share_roll",
+                &npc.npc_id,
+            ) % 100) as i64;
+            let share_threshold = (8 + gossip_drive / 2 + salience * 3).clamp(12, 76);
+            if share_roll < share_threshold {
+                let trust_floor = if salience >= 8 {
+                    12
+                } else if gossip_drive >= 72 {
+                    2
+                } else {
+                    8
+                };
+                if let Some(target_id) = self.social_target_for_tick(
+                    &npc.npc_id,
+                    &npc.location_id,
+                    trust_floor,
+                    tick,
+                    "observation_share",
+                ) {
+                    self.push_runtime_event(
+                        tick,
+                        sequence_in_tick,
+                        causal_chain,
+                        system_event_id,
+                        EventType::ConversationHeld,
+                        npc.location_id.clone(),
+                        vec![ActorRef {
+                            actor_id: npc.npc_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec![ActorRef {
+                            actor_id: target_id.clone(),
+                            actor_kind: "npc".to_string(),
+                        }],
+                        vec!["social".to_string(), "gossip".to_string()],
+                        Some(json!({
+                            "topic": topic,
+                            "source_event_id": source_event_id,
+                            "source_action": chosen_action,
+                            "salience": salience,
+                        })),
+                    );
+                    let memory = self.pair_memory_mut(&npc.npc_id, &target_id);
+                    memory.last_social_tick = tick;
+                }
             }
         }
     }
@@ -4198,18 +7793,20 @@ impl Kernel {
                 .rev()
                 .take(48)
                 .filter(|event| {
-                    event.location_id == settlement_id && event.event_type == EventType::TheftCommitted
+                    event.location_id == settlement_id
+                        && event.event_type == EventType::TheftCommitted
                 })
                 .count() as i64;
-            let Some(mut institution) = self.institutions_by_settlement.remove(&settlement_id) else {
+            let Some(mut institution) = self.institutions_by_settlement.remove(&settlement_id)
+            else {
                 continue;
             };
             let law_pressure = law_cases.clamp(0, 16);
             let theft_pressure = thefts_recent.clamp(0, 16);
             let social_fragment = (self.social_cohesion < -20) as i64;
-            let target_capacity =
-                (62 - law_pressure * 2 - theft_pressure / 3 + (self.social_cohesion > 20) as i64 * 4)
-                    .clamp(35, 90);
+            let target_capacity = (62 - law_pressure * 2 - theft_pressure / 3
+                + (self.social_cohesion > 20) as i64 * 4)
+                .clamp(35, 90);
             let target_corruption = (18 + theft_pressure + social_fragment * 6).clamp(5, 85);
             let target_bias = (14 + social_fragment * 8 + law_pressure / 2).clamp(5, 80);
             let target_latency =
@@ -4229,28 +7826,76 @@ impl Kernel {
             self.institutions_by_settlement
                 .insert(settlement_id.clone(), institution);
 
-            self.push_runtime_event(
-                tick,
-                sequence_in_tick,
-                causal_chain,
-                system_event_id,
-                EventType::InstitutionProfileUpdated,
-                settlement_id.clone(),
-                vec![ActorRef {
-                    actor_id: format!("institution:{settlement_id}"),
-                    actor_kind: "institution".to_string(),
-                }],
-                Vec::new(),
-                vec!["institution".to_string()],
-                Some(json!({
-                    "enforcement_capacity": enforcement_capacity,
-                    "corruption_level": corruption_level,
-                    "bias_level": bias_level,
-                    "response_latency_ticks": response_latency_ticks,
-                    "law_cases": law_cases,
-                    "thefts_recent": thefts_recent,
-                })),
-            );
+            if tick % 24 == 0 {
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    EventType::InstitutionProfileUpdated,
+                    settlement_id.clone(),
+                    vec![ActorRef {
+                        actor_id: format!("institution:{settlement_id}"),
+                        actor_kind: "institution".to_string(),
+                    }],
+                    Vec::new(),
+                    vec!["institution".to_string()],
+                    Some(json!({
+                        "enforcement_capacity": enforcement_capacity,
+                        "corruption_level": corruption_level,
+                        "bias_level": bias_level,
+                        "response_latency_ticks": response_latency_ticks,
+                        "law_cases": law_cases,
+                        "thefts_recent": thefts_recent,
+                    })),
+                );
+            }
+
+            let queue_state = self
+                .institution_queue_by_settlement
+                .entry(settlement_id.clone())
+                .or_insert_with(|| InstitutionQueueRuntimeState {
+                    settlement_id: settlement_id.clone(),
+                    pending_cases: 0,
+                    processed_cases: 0,
+                    dropped_cases: 0,
+                    avg_response_latency: 2,
+                });
+            queue_state.pending_cases = law_cases.max(0);
+            queue_state.processed_cases +=
+                (enforcement_capacity / 18).max(0) + (law_cases == 0) as i64;
+            if corruption_level >= 70 {
+                queue_state.dropped_cases += (law_cases / 3).max(1);
+            }
+            queue_state.avg_response_latency =
+                step_toward(queue_state.avg_response_latency, response_latency_ticks, 1);
+            let pending_cases = queue_state.pending_cases;
+            let processed_cases = queue_state.processed_cases;
+            let dropped_cases = queue_state.dropped_cases;
+            let avg_response_latency = queue_state.avg_response_latency;
+            if tick % 24 == 0 {
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    EventType::InstitutionQueueUpdated,
+                    settlement_id.clone(),
+                    vec![ActorRef {
+                        actor_id: format!("institution_queue:{settlement_id}"),
+                        actor_kind: "institution_queue".to_string(),
+                    }],
+                    Vec::new(),
+                    vec!["institution".to_string(), "queue".to_string()],
+                    Some(json!({
+                        "settlement_id": settlement_id,
+                        "pending_cases": pending_cases,
+                        "processed_cases": processed_cases,
+                        "dropped_cases": dropped_cases,
+                        "avg_response_latency": avg_response_latency,
+                    })),
+                );
+            }
             if corruption_level >= 75 && tick % 24 == 0 {
                 self.push_runtime_event(
                     tick,
@@ -4305,6 +7950,24 @@ impl Kernel {
                 {
                     continue;
                 }
+                let recent_group_churn = self
+                    .event_log
+                    .iter()
+                    .rev()
+                    .take(180)
+                    .filter(|event| {
+                        event.location_id == settlement_id
+                            && matches!(
+                                event.event_type,
+                                EventType::GroupSplit
+                                    | EventType::GroupDissolved
+                                    | EventType::GroupFormed
+                            )
+                    })
+                    .count() as i64;
+                if recent_group_churn >= 2 {
+                    continue;
+                }
                 let candidate_npcs = self
                     .npcs
                     .iter()
@@ -4330,9 +7993,8 @@ impl Kernel {
                         if left == right {
                             continue;
                         }
-                        if let Some(edge) = self
-                            .relationship_edges
-                            .get(&(left.clone(), right.clone()))
+                        if let Some(edge) =
+                            self.relationship_edges.get(&(left.clone(), right.clone()))
                         {
                             if edge.trust >= 4 && edge.grievance <= 45 {
                                 supportive_pairs += 1;
@@ -4349,7 +8011,8 @@ impl Kernel {
                         event.location_id == settlement_id
                             && event.event_type == EventType::NpcActionCommitted
                             && matches!(
-                                event.details
+                                event
+                                    .details
                                     .as_ref()
                                     .and_then(|details| details.get("chosen_action"))
                                     .and_then(Value::as_str),
@@ -4360,6 +8023,31 @@ impl Kernel {
                 if supportive_pairs == 0 && group_interest == 0 {
                     continue;
                 }
+                let sustained_interest = self
+                    .event_log
+                    .iter()
+                    .rev()
+                    .take(192)
+                    .filter(|event| {
+                        event.location_id == settlement_id
+                            && event.event_type == EventType::NpcActionCommitted
+                            && matches!(
+                                event
+                                    .details
+                                    .as_ref()
+                                    .and_then(|details| details.get("chosen_action"))
+                                    .and_then(Value::as_str),
+                                Some(
+                                    "form_mutual_aid_group"
+                                        | "share_meal"
+                                        | "converse_neighbor"
+                                        | "lend_coin"
+                                        | "mediate_dispute"
+                                        | "court_romance"
+                                )
+                            )
+                    })
+                    .count() as i64;
                 let shortage = self
                     .stock_by_settlement
                     .get(&settlement_id)
@@ -4377,16 +8065,18 @@ impl Kernel {
                     .count() as i64;
                 let formation_score = supportive_pairs * 8
                     + group_interest * 6
+                    + sustained_interest * 2
                     + (self.social_cohesion.max(0) / 18)
                     + shortage * 5
-                    - theft_pressure;
+                    - theft_pressure
+                    - recent_group_churn * 6;
                 let roll = (self.deterministic_stream(
                     tick,
                     Phase::Commit,
                     "group_formation",
                     &settlement_id,
                 ) % 100) as i64;
-                if formation_score + roll < 45 {
+                if formation_score + roll < 62 {
                     continue;
                 }
 
@@ -4454,7 +8144,7 @@ impl Kernel {
                         ],
                         cohesion_score: (24 + supportive_pairs * 3).clamp(18, 55),
                         formed_tick: tick,
-                        inertia_score: (20 + group_interest).clamp(20, 60),
+                        inertia_score: (26 + group_interest + sustained_interest / 2).clamp(24, 72),
                         shared_cause: shared_cause.to_string(),
                         infiltration_pressure: 2,
                     },
@@ -4495,7 +8185,8 @@ impl Kernel {
                 .rev()
                 .take(48)
                 .filter(|event| {
-                    event.location_id == settlement_id && event.event_type == EventType::TheftCommitted
+                    event.location_id == settlement_id
+                        && event.event_type == EventType::TheftCommitted
                 })
                 .count() as i64;
             let shortage = self
@@ -4540,13 +8231,15 @@ impl Kernel {
                     event.location_id == settlement_id
                         && event.event_type == EventType::NpcActionCommitted
                         && matches!(
-                            event.details
+                            event
+                                .details
                                 .as_ref()
                                 .and_then(|details| details.get("chosen_action"))
                                 .and_then(Value::as_str),
                             Some(
                                 "share_meal"
-                                    | "assist_neighbor"
+                                    | "converse_neighbor"
+                                    | "lend_coin"
                                     | "mediate_dispute"
                                     | "form_mutual_aid_group"
                                     | "defend_patron"
@@ -4555,11 +8248,10 @@ impl Kernel {
                 })
                 .count() as i64;
             let stagnation_penalty = if support_signal == 0 { 2 } else { 0 };
-            group.infiltration_pressure = (group.infiltration_pressure
-                + hostile_to_leader
-                + theft_pressure / 4
-                - cause_alignment.max(0)
-                + if support_signal <= 1 { 1 } else { 0 })
+            group.infiltration_pressure =
+                (group.infiltration_pressure + hostile_to_leader + theft_pressure / 4
+                    - cause_alignment.max(0)
+                    + if support_signal <= 1 { 1 } else { 0 })
                 .clamp(0, 100);
             let resilience = if group_age < 120 { 1 } else { 0 };
             let cohesion_delta = cause_alignment
@@ -4580,26 +8272,29 @@ impl Kernel {
                     0
                 };
             group.cohesion_score = (group.cohesion_score + cohesion_delta).clamp(-60, 85);
-            group.inertia_score =
-                (group.inertia_score + cause_alignment + (support_signal / 6) - (group.infiltration_pressure / 26) - stagnation_penalty)
-                    .clamp(-60, 80);
+            group.inertia_score = (group.inertia_score + cause_alignment + (support_signal / 6)
+                - (group.infiltration_pressure / 26)
+                - stagnation_penalty)
+                .clamp(-60, 80);
             let cohesion = group.cohesion_score;
             let member_count = group.member_npc_ids.len();
-            let split = group_age >= 144
+            let split = group_age >= 288
                 && member_count >= 3
-                && cohesion <= -30
-                && group.infiltration_pressure >= 55
-                && tick % 24 == 0;
-            let dissolve = group_age >= 192
-                && cohesion <= -45
-                && group.inertia_score <= -16
+                && cohesion <= -40
+                && group.infiltration_pressure >= 62
+                && support_signal <= 1
+                && tick % 48 == 0;
+            let dissolve = group_age >= 432
+                && cohesion <= -52
+                && group.inertia_score <= -24
                 && (member_count <= 1 || cohesion <= -50)
                 && (group.infiltration_pressure >= 70 || cause_alignment < 0)
-                && tick % 24 == 0;
+                && support_signal == 0
+                && tick % 48 == 0;
             if !dissolve {
                 self.groups_by_id.insert(group_id.clone(), group.clone());
             }
-            if tick % 12 == 0 || split || dissolve {
+            if tick % 24 == 0 || split || dissolve {
                 self.push_runtime_event(
                     tick,
                     sequence_in_tick,
@@ -4671,6 +8366,8 @@ impl Kernel {
                 continue;
             };
             let previous_window = route.weather_window_open;
+            let previous_hazard = route.hazard_score;
+            let previous_travel_time = route.travel_time_ticks;
             let weather_roll =
                 self.deterministic_stream(tick, Phase::Perception, &route.route_id, "weather");
             route.weather_window_open = weather_roll % 5 != 0;
@@ -4691,7 +8388,7 @@ impl Kernel {
                 + systemic_stress
                 + (local_thefts / 6)
                 - 1)
-                .clamp(0, 100);
+            .clamp(0, 100);
             route.travel_time_ticks =
                 (18_i64 + route.hazard_score / 9 + if route.weather_window_open { 0 } else { 4 })
                     .max(8) as u64;
@@ -4702,24 +8399,28 @@ impl Kernel {
             let actor_route_id = route.route_id.clone();
             self.routes_by_id.insert(route_id, route);
 
-            self.push_runtime_event(
-                tick,
-                sequence_in_tick,
-                causal_chain,
-                system_event_id,
-                EventType::RouteRiskUpdated,
-                origin.clone(),
-                vec![ActorRef {
-                    actor_id: actor_route_id.clone(),
-                    actor_kind: "route".to_string(),
-                }],
-                Vec::new(),
-                vec!["mobility".to_string(), "risk".to_string()],
-                Some(json!({
-                    "hazard_score": hazard,
-                    "travel_time_ticks": travel,
-                })),
-            );
+            let risk_changed =
+                (hazard - previous_hazard).abs() >= 4 || travel.abs_diff(previous_travel_time) >= 4;
+            if tick % 12 == 0 || risk_changed {
+                self.push_runtime_event(
+                    tick,
+                    sequence_in_tick,
+                    causal_chain,
+                    system_event_id,
+                    EventType::RouteRiskUpdated,
+                    origin.clone(),
+                    vec![ActorRef {
+                        actor_id: actor_route_id.clone(),
+                        actor_kind: "route".to_string(),
+                    }],
+                    Vec::new(),
+                    vec!["mobility".to_string(), "risk".to_string()],
+                    Some(json!({
+                        "hazard_score": hazard,
+                        "travel_time_ticks": travel,
+                    })),
+                );
+            }
             if previous_window != weather_window_open {
                 self.push_runtime_event(
                     tick,
@@ -4797,8 +8498,10 @@ impl Kernel {
                     if let Some(pressure) = packet.top_pressures.first() {
                         chain.push(format!("pressure::{pressure}"));
                     }
-                    if let Some(intent) =
-                        packet.top_intents.iter().find(|intent| intent.as_str() != "maintain_routine")
+                    if let Some(intent) = packet
+                        .top_intents
+                        .iter()
+                        .find(|intent| intent.as_str() != "maintain_routine")
                     {
                         chain.push(format!("intent::{intent}"));
                     }
@@ -4834,21 +8537,30 @@ impl Kernel {
         let social_consequence = if matches!(chosen_action, "steal_supplies" | "fence_goods") {
             "scarcity pressure tipped behavior into norm-breaking, raising future retaliation risk"
                 .to_string()
-        } else if matches!(chosen_action, "organize_watch" | "patrol_road")
-            && local_case_load == 0
+        } else if matches!(chosen_action, "organize_watch" | "patrol_road") && local_case_load == 0
         {
             "high vigilance consumed social bandwidth without immediate threat signals".to_string()
         } else if matches!(chosen_action, "seek_shelter") && self.pressure_index < 140 {
-            "precautionary shelter-seeking postponed livelihood recovery for another cycle".to_string()
-        } else if matches!(chosen_action, "work_for_coin" | "work_for_food" | "tend_fields") {
+            "precautionary shelter-seeking postponed livelihood recovery for another cycle"
+                .to_string()
+        } else if matches!(
+            chosen_action,
+            "work_for_coin" | "work_for_food" | "tend_fields"
+        ) {
             "livelihood maintenance reduced immediate household stress while keeping long-term obligations active"
                 .to_string()
-        } else if matches!(chosen_action, "form_mutual_aid_group" | "share_meal" | "mediate_dispute") {
-            "cooperative behavior improved local support ties and reduced short-term volatility".to_string()
+        } else if matches!(
+            chosen_action,
+            "form_mutual_aid_group" | "share_meal" | "mediate_dispute"
+        ) {
+            "cooperative behavior improved local support ties and reduced short-term volatility"
+                .to_string()
         } else if matches!(chosen_action, "spread_accusation" | "share_rumor") {
-            "narrative competition intensified, shifting trust and credibility in uneven ways".to_string()
+            "narrative competition intensified, shifting trust and credibility in uneven ways"
+                .to_string()
         } else if local_stock <= 4 {
-            "resource scarcity amplified defensive behavior and narrowed acceptable choices".to_string()
+            "resource scarcity amplified defensive behavior and narrowed acceptable choices"
+                .to_string()
         } else if self.social_cohesion < -20 {
             "outcome remained contested in fragmented local networks".to_string()
         } else {
@@ -5034,6 +8746,22 @@ impl Kernel {
                 "local_support_increase".to_string(),
                 "group_norm_pressure".to_string(),
             ],
+            AffordanceVerb::ConverseNeighbor | AffordanceVerb::ObserveNotableEvent => vec![
+                "social_information_diffusion".to_string(),
+                "relationship_reweighting".to_string(),
+            ],
+            AffordanceVerb::LendCoin => vec![
+                "short_term_household_relief".to_string(),
+                "future_obligation_created".to_string(),
+            ],
+            AffordanceVerb::CourtRomance => vec![
+                "bond_strength_shift".to_string(),
+                "reputation_effects".to_string(),
+            ],
+            AffordanceVerb::SeekTreatment => vec![
+                "health_stabilization_attempt".to_string(),
+                "time_budget_tradeoff".to_string(),
+            ],
             _ => vec!["incremental_state_shift".to_string()],
         };
         if self
@@ -5045,6 +8773,105 @@ impl Kernel {
             outcomes.push("institutional_outcome_uncertain".to_string());
         }
         outcomes
+    }
+
+    fn recent_action_stats(
+        &self,
+        tick: u64,
+        location_id: &str,
+        action: &str,
+        window_ticks: u64,
+    ) -> (i64, i64) {
+        let mut total = 0_i64;
+        let mut same_action = 0_i64;
+        for event in self.event_log.iter().rev() {
+            if event.tick + window_ticks < tick {
+                break;
+            }
+            if event.location_id != location_id || event.event_type != EventType::NpcActionCommitted {
+                continue;
+            }
+            total += 1;
+            if event
+                .details
+                .as_ref()
+                .and_then(|details| details.get("chosen_action"))
+                .and_then(Value::as_str)
+                == Some(action)
+            {
+                same_action += 1;
+            }
+        }
+        (same_action, total)
+    }
+
+    fn local_topic_for_npc(&self, npc_id: &str, location_id: &str, tick: u64, channel: &str) -> String {
+        if let Some(last_observation) = self
+            .observations_by_npc
+            .get(npc_id)
+            .and_then(|entries| entries.iter().rev().find(|entry| tick.saturating_sub(entry.tick) <= 48))
+        {
+            return last_observation.topic.clone();
+        }
+
+        let nearby_locations = self
+            .routes_by_id
+            .values()
+            .filter(|route| route.weather_window_open && route.hazard_score <= 60)
+            .filter_map(|route| {
+                if route.origin_settlement_id == location_id {
+                    Some(route.destination_settlement_id.clone())
+                } else if route.destination_settlement_id == location_id {
+                    Some(route.origin_settlement_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        let recent = self
+            .event_log
+            .iter()
+            .rev()
+            .take(192)
+            .filter(|event| {
+                event.tick <= tick
+                    && (event.location_id == location_id || nearby_locations.contains(&event.location_id))
+                    && matches!(
+                        event.event_type,
+                        EventType::TheftCommitted
+                            | EventType::ArrestMade
+                            | EventType::InsultExchanged
+                            | EventType::PunchThrown
+                            | EventType::BrawlStarted
+                            | EventType::RomanceAdvanced
+                            | EventType::ConversationHeld
+                            | EventType::NpcActionCommitted
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(source) = recent.first() {
+            let chosen_action = source
+                .details
+                .as_ref()
+                .and_then(|details| details.get("chosen_action"))
+                .and_then(Value::as_str);
+            return observation_topic_for_event(
+                source.event_type,
+                &source.tags,
+                source.details.as_ref(),
+                chosen_action,
+            );
+        }
+
+        let fallback_roll = self.deterministic_stream(tick, Phase::Commit, npc_id, channel) % 5;
+        match fallback_roll {
+            0 => "weather_and_roads".to_string(),
+            1 => "market_prices".to_string(),
+            2 => "watch_patrols".to_string(),
+            3 => "neighbor_work".to_string(),
+            _ => "daily_activity".to_string(),
+        }
     }
 
     fn household_pressure_signal(&self) -> i64 {
@@ -5093,7 +8920,9 @@ impl Kernel {
         self.institutions_by_settlement
             .values()
             .map(|institution| {
-                (institution.corruption_level + institution.bias_level + institution.response_latency_ticks)
+                (institution.corruption_level
+                    + institution.bias_level
+                    + institution.response_latency_ticks)
                     / 70
             })
             .sum::<i64>()
@@ -5127,9 +8956,7 @@ impl Kernel {
     fn first_wanted_npc_at_location(&self, location_id: &str) -> Option<String> {
         self.npcs
             .iter()
-            .find(|npc| {
-                npc.location_id == location_id && self.wanted_npcs.contains(&npc.npc_id)
-            })
+            .find(|npc| npc.location_id == location_id && self.wanted_npcs.contains(&npc.npc_id))
             .map(|npc| npc.npc_id.clone())
     }
 
@@ -5146,6 +8973,128 @@ impl Kernel {
                         > 0
             })
             .map(|npc| (npc.npc_id.clone(), npc.location_id.clone()))
+    }
+
+    fn social_target_for(
+        &self,
+        source_npc_id: &str,
+        location_id: &str,
+        trust_floor: i64,
+    ) -> Option<String> {
+        let nearby_locations = self
+            .routes_by_id
+            .values()
+            .filter(|route| route.weather_window_open && route.hazard_score <= 55)
+            .filter_map(|route| {
+                if route.origin_settlement_id == location_id {
+                    Some(route.destination_settlement_id.clone())
+                } else if route.destination_settlement_id == location_id {
+                    Some(route.origin_settlement_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        let trusted = self
+            .relationship_edges
+            .values()
+            .filter(|edge| edge.source_npc_id == source_npc_id && edge.trust >= trust_floor)
+            .filter(|edge| {
+                self.npc_location_for(&edge.target_npc_id)
+                    .map(|location| location == location_id || nearby_locations.contains(&location))
+                    .unwrap_or(false)
+            })
+            .max_by_key(|edge| edge.trust)
+            .map(|edge| edge.target_npc_id.clone());
+        if trusted.is_some() {
+            return trusted;
+        }
+
+        self.npcs
+            .iter()
+            .find(|npc| {
+                (npc.location_id == location_id || nearby_locations.contains(&npc.location_id))
+                    && npc.npc_id != source_npc_id
+            })
+            .map(|npc| npc.npc_id.clone())
+    }
+
+    fn social_target_for_tick(
+        &self,
+        source_npc_id: &str,
+        location_id: &str,
+        trust_floor: i64,
+        tick: u64,
+        channel: &str,
+    ) -> Option<String> {
+        let nearby_locations = self
+            .routes_by_id
+            .values()
+            .filter(|route| route.weather_window_open && route.hazard_score <= 55)
+            .filter_map(|route| {
+                if route.origin_settlement_id == location_id {
+                    Some(route.destination_settlement_id.clone())
+                } else if route.destination_settlement_id == location_id {
+                    Some(route.origin_settlement_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        let candidates = self
+            .relationship_edges
+            .values()
+            .filter(|edge| edge.source_npc_id == source_npc_id && edge.trust >= trust_floor)
+            .filter(|edge| {
+                self.npc_location_for(&edge.target_npc_id)
+                    .map(|location| location == location_id || nearby_locations.contains(&location))
+                    .unwrap_or(false)
+            })
+            .map(|edge| {
+                let pair_key = canonical_pair_key(source_npc_id, &edge.target_npc_id);
+                let memory = self
+                    .pair_event_memory
+                    .get(&pair_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let recency_penalty = if memory.last_social_tick > 0
+                    && tick.saturating_sub(memory.last_social_tick) < 10
+                {
+                    10
+                } else {
+                    0
+                };
+                let weight = (8
+                    + edge.trust / 4
+                    + edge.attachment / 6
+                    + edge.respect / 8
+                    + edge.obligation / 10
+                    - recency_penalty)
+                    .clamp(1, 96);
+                (edge.target_npc_id.clone(), weight)
+            })
+            .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            return self.social_target_for(source_npc_id, location_id, trust_floor);
+        }
+        let weights = candidates
+            .iter()
+            .map(|(_, weight)| *weight)
+            .collect::<Vec<_>>();
+        let roll = self.deterministic_stream(
+            tick,
+            Phase::Commit,
+            source_npc_id,
+            &format!("social_target:{channel}:{location_id}"),
+        );
+        let idx = pick_weighted_index(roll, &weights)?;
+        candidates.get(idx).map(|(target_id, _)| target_id.clone())
+    }
+
+    fn pair_memory_mut(&mut self, left_npc_id: &str, right_npc_id: &str) -> &mut PairEventMemory {
+        let key = canonical_pair_key(left_npc_id, right_npc_id);
+        self.pair_event_memory.entry(key).or_default()
     }
 
     fn npc_holds_stolen_item(&self, npc_id: &str) -> bool {
@@ -5177,17 +9126,19 @@ impl Kernel {
         if let Some((item_id, owner_id)) = self
             .item_registry
             .iter()
-            .find(|(_, item)| item.location_id == location_id && item.owner_id != thief_npc_id)
+            .find(|(_, item)| {
+                item.location_id == location_id
+                    && item.owner_id != thief_npc_id
+                    && !item.owner_id.starts_with("fence:")
+                    && item.last_moved_tick + 24 <= tick
+            })
             .map(|(item_id, item)| (item_id.clone(), item.owner_id.clone()))
         {
             return (item_id, owner_id);
         }
 
         (
-            format!(
-                "item:cache:{}:{tick}",
-                location_id.replace(':', "_")
-            ),
+            format!("item:cache:{}:{tick}", location_id.replace(':', "_")),
             format!("store:{location_id}"),
         )
     }
@@ -5211,24 +9162,138 @@ impl fmt::Display for Phase {
     }
 }
 
-fn default_npcs() -> Vec<NpcAgent> {
-    vec![
+fn settlement_catalog() -> [&'static str; 3] {
+    [
+        "settlement:greywall",
+        "settlement:millford",
+        "settlement:oakham",
+    ]
+}
+
+fn settlement_ids_from_npcs(npcs: &[NpcAgent]) -> Vec<String> {
+    let ids = npcs
+        .iter()
+        .map(|npc| npc.location_id.clone())
+        .collect::<BTreeSet<_>>();
+    if ids.is_empty() {
+        return settlement_catalog()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+    }
+    ids.into_iter().collect::<Vec<_>>()
+}
+
+fn resolve_npc_count(seed: u64, npc_count_min: u16, npc_count_max: u16) -> usize {
+    let min = usize::from(npc_count_min.max(3));
+    let max = usize::from(npc_count_max.max(npc_count_min).max(3));
+    if min == max {
+        return min;
+    }
+    let span = (max - min + 1) as u64;
+    min + (mix64(seed ^ 0xA9D1_5B3C) % span) as usize
+}
+
+fn default_npcs(seed: u64, npc_count_min: u16, npc_count_max: u16) -> Vec<NpcAgent> {
+    let target_count = resolve_npc_count(seed, npc_count_min, npc_count_max);
+    let settlements = settlement_catalog();
+    let professions = [
+        "blacksmith",
+        "farmhand",
+        "carter",
+        "tanner",
+        "miller",
+        "fletcher",
+        "scribe",
+        "guard",
+        "innkeeper",
+        "herbalist",
+        "fisher",
+        "mason",
+    ];
+    let aspirations = [
+        "stable_household",
+        "open_workshop",
+        "grow_trade_network",
+        "pay_off_debt",
+        "gain_status",
+        "master_craft",
+        "protect_family",
+        "secure_patronage",
+    ];
+    let social_classes = ["commoner", "free_worker", "free_craft", "retainer"];
+    let temperaments = [
+        "steady",
+        "restless",
+        "sociable",
+        "guarded",
+        "pragmatic",
+        "hotheaded",
+    ];
+    let hobbies = [
+        "craft", "dice", "hunting", "gossip", "music", "prayer", "drinking", "cards", "poetry",
+        "horsecare",
+    ];
+
+    let mut npcs = vec![
         NpcAgent {
             npc_id: "npc_001".to_string(),
             location_id: "settlement:greywall".to_string(),
+            profession: "blacksmith".to_string(),
+            aspiration: "open_workshop".to_string(),
+            social_class: "free_craft".to_string(),
+            temperament: "steady".to_string(),
+            hobbies: vec!["craft".to_string(), "dice".to_string()],
         },
         NpcAgent {
             npc_id: "npc_002".to_string(),
             location_id: "settlement:millford".to_string(),
+            profession: "farmhand".to_string(),
+            aspiration: "secure_household".to_string(),
+            social_class: "commoner".to_string(),
+            temperament: "sociable".to_string(),
+            hobbies: vec!["gossip".to_string(), "music".to_string()],
         },
         NpcAgent {
             npc_id: "npc_003".to_string(),
             location_id: "settlement:oakham".to_string(),
+            profession: "carter".to_string(),
+            aspiration: "grow_trade_network".to_string(),
+            social_class: "free_worker".to_string(),
+            temperament: "restless".to_string(),
+            hobbies: vec!["hunting".to_string(), "dice".to_string()],
         },
-    ]
+    ];
+
+    for idx in 3..target_count {
+        let idx_u64 = idx as u64;
+        let entropy = mix64(seed ^ (idx_u64.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+        let settlement_idx = (entropy % settlements.len() as u64) as usize;
+        let profession = professions[(mix64(entropy ^ 0x11) % professions.len() as u64) as usize];
+        let aspiration = aspirations[(mix64(entropy ^ 0x22) % aspirations.len() as u64) as usize];
+        let social_class =
+            social_classes[(mix64(entropy ^ 0x33) % social_classes.len() as u64) as usize];
+        let temperament =
+            temperaments[(mix64(entropy ^ 0x44) % temperaments.len() as u64) as usize];
+        let hobby_a = (mix64(entropy ^ 0x55) % hobbies.len() as u64) as usize;
+        let hobby_b = (hobby_a + 1 + (mix64(entropy ^ 0x66) % (hobbies.len() as u64 - 1)) as usize)
+            % hobbies.len();
+        npcs.push(NpcAgent {
+            npc_id: format!("npc_{:03}", idx + 1),
+            location_id: settlements[settlement_idx].to_string(),
+            profession: profession.to_string(),
+            aspiration: aspiration.to_string(),
+            social_class: social_class.to_string(),
+            temperament: temperament.to_string(),
+            hobbies: vec![hobbies[hobby_a].to_string(), hobbies[hobby_b].to_string()],
+        });
+    }
+
+    npcs.truncate(target_count);
+    npcs
 }
 
-fn default_items() -> BTreeMap<String, ItemRecord> {
+fn default_items(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, ItemRecord> {
     let mut items = BTreeMap::new();
     items.insert(
         "item:guild_ledger".to_string(),
@@ -5257,23 +9322,53 @@ fn default_items() -> BTreeMap<String, ItemRecord> {
             last_moved_tick: 0,
         },
     );
+    for npc in npcs {
+        let entropy = mix64(seed ^ hash_bytes(npc.npc_id.as_bytes()) ^ 0xC1);
+        let item_id = format!("item:kit:{}", npc.npc_id);
+        items.insert(
+            item_id,
+            ItemRecord {
+                owner_id: format!("npc:{}", npc.npc_id),
+                location_id: npc.location_id.clone(),
+                stolen: false,
+                last_moved_tick: entropy % 8,
+            },
+        );
+    }
     items
 }
 
-fn default_npc_economy(npcs: &[NpcAgent]) -> BTreeMap<String, NpcEconomyState> {
+fn default_npc_economy(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, NpcEconomyState> {
     let mut states = BTreeMap::new();
     for (idx, npc) in npcs.iter().enumerate() {
+        let entropy = mix64(seed ^ hash_bytes(npc.npc_id.as_bytes()) ^ 0x5A);
+        let wallet = 2 + (entropy % 12) as i64;
+        let debt = (mix64(entropy ^ 0x11) % 5) as i64;
+        let food = 2 + (mix64(entropy ^ 0x22) % 8) as i64;
+        let shelter_roll = (mix64(entropy ^ 0x33) % 100) as i64;
+        let shelter_status = if shelter_roll < 10 {
+            ShelterStatus::Unsheltered
+        } else if shelter_roll < 36 {
+            ShelterStatus::Precarious
+        } else {
+            ShelterStatus::Stable
+        };
+        let dependents = (mix64(entropy ^ 0x44) % 3) as u8;
+        let apprenticeship = (mix64(entropy ^ 0x55) % 128) as i64;
+        let health = 58 + (mix64(entropy ^ 0x66) % 43) as i64;
         states.insert(
             npc.npc_id.clone(),
             NpcEconomyState {
                 household_id: format!("household:{:03}", idx + 1),
-                wallet: 6 - idx as i64,
-                debt_balance: 1 + (idx as i64 % 2),
-                food_reserve_days: 4 - idx as i64,
-                shelter_status: ShelterStatus::Stable,
-                dependents_count: if idx == 0 { 1 } else { 0 },
-                apprenticeship_progress: (idx as i64) * 2,
+                wallet,
+                debt_balance: debt,
+                food_reserve_days: food,
+                shelter_status,
+                dependents_count: dependents,
+                apprenticeship_progress: apprenticeship,
                 employer_contract_id: None,
+                health,
+                illness_ticks: 0,
             },
         );
     }
@@ -5284,7 +9379,8 @@ fn default_npc_traits(npcs: &[NpcAgent]) -> BTreeMap<String, NpcTraitProfile> {
     npcs.iter()
         .map(|npc| {
             let base = hash_bytes(npc.npc_id.as_bytes());
-            let lane = |salt: u64| -> i64 { 25 + (((mix64(base ^ salt) % 51) as i64).clamp(0, 50)) };
+            let lane =
+                |salt: u64| -> i64 { 25 + (((mix64(base ^ salt) % 51) as i64).clamp(0, 50)) };
             (
                 npc.npc_id.clone(),
                 NpcTraitProfile {
@@ -5294,51 +9390,68 @@ fn default_npc_traits(npcs: &[NpcAgent]) -> BTreeMap<String, NpcTraitProfile> {
                     ambition: lane(0xD4),
                     empathy: lane(0xE5),
                     resilience: lane(0xF6),
+                    aggression: lane(0x17),
+                    patience: lane(0x28),
+                    honor: lane(0x39),
+                    generosity: lane(0x4A),
+                    romance_drive: lane(0x5B),
+                    gossip_drive: lane(0x6C),
                 },
             )
         })
         .collect::<BTreeMap<_, _>>()
 }
 
-fn default_households(npcs: &[NpcAgent]) -> BTreeMap<String, HouseholdState> {
+fn default_households(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, HouseholdState> {
     let mut households = BTreeMap::new();
     for (idx, npc) in npcs.iter().enumerate() {
+        let entropy = mix64(seed ^ hash_bytes(npc.npc_id.as_bytes()) ^ 0x7D);
+        let pantry = 4 + (entropy % 12) as i64;
+        let fuel = 3 + (mix64(entropy ^ 0x10) % 9) as i64;
+        let rent_due_tick = 24 * (5 + (mix64(entropy ^ 0x20) % 28));
+        let rent_amount = 8 + (mix64(entropy ^ 0x30) % 18) as i64;
+        let eviction_risk = 4 + (mix64(entropy ^ 0x40) % 37) as i64;
         let household_id = format!("household:{:03}", idx + 1);
         households.insert(
             household_id.clone(),
             HouseholdState {
                 household_id,
                 member_npc_ids: vec![npc.npc_id.clone()],
-                shared_pantry_stock: 8 - idx as i64,
-                fuel_stock: 6 - idx as i64,
-                rent_due_tick: 24 * (8 + idx as u64 * 6),
+                shared_pantry_stock: pantry,
+                fuel_stock: fuel,
+                rent_due_tick,
                 rent_cadence_ticks: 24 * 30,
-                rent_amount: 12 + idx as i64,
+                rent_amount,
                 rent_reserve_coin: 0,
                 landlord_balance: 0,
-                eviction_risk_score: 8 + idx as i64 * 3,
+                eviction_risk_score: eviction_risk,
             },
         );
     }
     households
 }
 
-fn default_contracts(npcs: &[NpcAgent]) -> BTreeMap<String, ContractState> {
+fn default_contracts(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, ContractState> {
     let mut contracts = BTreeMap::new();
     for (idx, npc) in npcs.iter().enumerate() {
+        let entropy = mix64(seed ^ hash_bytes(npc.npc_id.as_bytes()) ^ 0x3F);
         let settlement_id = npc.location_id.clone();
         let contract_id = format!("contract:seed:{:03}", idx + 1);
-        let cadence = match idx % 3 {
+        let cadence = match mix64(entropy ^ 0x01) % 3 {
             0 => ContractCadence::Daily,
             1 => ContractCadence::Weekly,
             _ => ContractCadence::Monthly,
         };
         let wage_amount = match cadence {
-            ContractCadence::Daily => 2 + idx as i64,
-            ContractCadence::Weekly => 12 + idx as i64 * 2,
-            ContractCadence::Monthly => 45 + idx as i64 * 4,
+            ContractCadence::Daily => 2 + (mix64(entropy ^ 0x02) % 4) as i64,
+            ContractCadence::Weekly => 11 + (mix64(entropy ^ 0x03) % 10) as i64,
+            ContractCadence::Monthly => 40 + (mix64(entropy ^ 0x04) % 32) as i64,
         };
-        let next_payment_tick = cadence_interval_ticks(cadence);
+        let payment_phase = (mix64(entropy ^ 0x05) % 8) as u64;
+        let next_payment_tick = cadence_interval_ticks(cadence) + payment_phase;
+        let reliability =
+            (46 + (mix64(entropy ^ 0x06) % 50) as i64 - (mix64(entropy ^ 0x07) % 8) as i64)
+                .clamp(30, 95) as u8;
         contracts.insert(
             contract_id.clone(),
             ContractState {
@@ -5347,14 +9460,14 @@ fn default_contracts(npcs: &[NpcAgent]) -> BTreeMap<String, ContractState> {
                     employer_id: format!("employer:{settlement_id}"),
                     worker_id: npc.npc_id.clone(),
                     settlement_id,
-                    compensation_type: if idx % 2 == 0 {
+                    compensation_type: if mix64(entropy ^ 0x08) % 2 == 0 {
                         ContractCompensationType::Mixed
                     } else {
                         ContractCompensationType::Coin
                     },
                     cadence,
                     wage_amount,
-                    reliability_score: 70 - idx as u8 * 8,
+                    reliability_score: reliability,
                     active: true,
                     breached: false,
                     next_payment_tick,
@@ -5365,15 +9478,24 @@ fn default_contracts(npcs: &[NpcAgent]) -> BTreeMap<String, ContractState> {
     contracts
 }
 
-fn default_labor_markets() -> BTreeMap<String, LaborMarketState> {
-    [
-        ("settlement:greywall".to_string(), 6_u32, 2_i64, 5_i64, 16_i64),
-        ("settlement:millford".to_string(), 4_u32, 2_i64, 4_i64, 18_i64),
-        ("settlement:oakham".to_string(), 5_u32, 1_i64, 4_i64, 20_i64),
-    ]
-    .into_iter()
-    .map(|(settlement_id, open_roles, wage_band_low, wage_band_high, underemployment_index)| {
-        (
+fn default_labor_markets(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, LaborMarketState> {
+    let settlements = settlement_ids_from_npcs(npcs);
+    let mut by_settlement = BTreeMap::<String, usize>::new();
+    for npc in npcs {
+        *by_settlement.entry(npc.location_id.clone()).or_default() += 1;
+    }
+    let mut markets = BTreeMap::new();
+    for settlement_id in settlements {
+        let pop = *by_settlement.get(&settlement_id).unwrap_or(&0) as i64;
+        let entropy = mix64(seed ^ hash_bytes(settlement_id.as_bytes()) ^ 0x90);
+        let base_roles = (pop * 3 / 5).max(2);
+        let open_roles = (base_roles + (entropy % 4) as i64).max(2) as u32;
+        let wage_band_low = 1 + (mix64(entropy ^ 0x01) % 3) as i64;
+        let wage_band_high = wage_band_low + 2 + (mix64(entropy ^ 0x02) % 3) as i64;
+        let underemployment_index =
+            ((pop - i64::from(open_roles)).max(0) * 5 + (mix64(entropy ^ 0x03) % 11) as i64)
+                .clamp(6, 96);
+        markets.insert(
             settlement_id,
             LaborMarketState {
                 open_roles,
@@ -5381,91 +9503,68 @@ fn default_labor_markets() -> BTreeMap<String, LaborMarketState> {
                 wage_band_high,
                 underemployment_index,
             },
-        )
-    })
-    .collect::<BTreeMap<_, _>>()
+        );
+    }
+    markets
 }
 
-fn default_stock_ledgers() -> BTreeMap<String, StockLedgerState> {
-    [
-        (
-            "settlement:greywall".to_string(),
-            14_i64,
-            9_i64,
-            4_i64,
-            5_i64,
-            180_i64,
-        ),
-        (
-            "settlement:millford".to_string(),
-            11_i64,
-            8_i64,
-            3_i64,
-            6_i64,
-            165_i64,
-        ),
-        (
-            "settlement:oakham".to_string(),
-            13_i64,
-            7_i64,
-            3_i64,
-            4_i64,
-            170_i64,
-        ),
-    ]
-    .into_iter()
-    .map(|(settlement_id, staples, fuel, medicine, craft_inputs, coin_reserve)| {
-        (
-            settlement_id,
+fn default_stock_ledgers(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, StockLedgerState> {
+    let settlements = settlement_ids_from_npcs(npcs);
+    let mut by_settlement = BTreeMap::<String, usize>::new();
+    for npc in npcs {
+        *by_settlement.entry(npc.location_id.clone()).or_default() += 1;
+    }
+    let mut stocks = BTreeMap::new();
+    for settlement_id in settlements {
+        let pop = *by_settlement.get(&settlement_id).unwrap_or(&0) as i64;
+        let entropy = mix64(seed ^ hash_bytes(settlement_id.as_bytes()) ^ 0xA7);
+        stocks.insert(
+            settlement_id.clone(),
             StockLedgerState {
-                staples,
-                fuel,
-                medicine,
-                craft_inputs,
+                staples: 18 + pop * 2 + (entropy % 6) as i64,
+                fuel: 10 + pop + (mix64(entropy ^ 0x01) % 5) as i64,
+                medicine: 4 + pop / 3 + (mix64(entropy ^ 0x02) % 3) as i64,
+                craft_inputs: 7 + pop / 2 + (mix64(entropy ^ 0x03) % 5) as i64,
                 local_price_pressure: 0,
-                coin_reserve,
+                coin_reserve: 180 + pop * 16 + (mix64(entropy ^ 0x04) % 40) as i64,
             },
-        )
-    })
-    .collect::<BTreeMap<_, _>>()
+        );
+    }
+    stocks
 }
 
-fn default_production_nodes() -> BTreeMap<String, ProductionNodeRuntimeState> {
-    [
-        (
-            "node:farm:oakham".to_string(),
-            "settlement:oakham".to_string(),
-            "farm".to_string(),
-        ),
-        (
-            "node:workshop:millford".to_string(),
-            "settlement:millford".to_string(),
-            "workshop".to_string(),
-        ),
-        (
-            "node:kiln:greywall".to_string(),
-            "settlement:greywall".to_string(),
-            "kiln".to_string(),
-        ),
-    ]
-    .into_iter()
-    .map(|(node_id, settlement_id, node_kind)| {
-        (
-            node_id.clone(),
-            ProductionNodeRuntimeState {
-                node_id,
-                settlement_id,
-                node_kind,
-                input_backlog: 2,
-                output_backlog: 1,
-                spoilage_timer: 14,
-            },
-        )
-    })
-    .collect::<BTreeMap<_, _>>()
+fn default_production_nodes(
+    npcs: &[NpcAgent],
+    seed: u64,
+) -> BTreeMap<String, ProductionNodeRuntimeState> {
+    let settlements = settlement_ids_from_npcs(npcs);
+    let mut nodes = BTreeMap::new();
+    for settlement_id in settlements {
+        for node_kind in ["farm", "workshop", "kiln"] {
+            let node_id = format!(
+                "node:{node_kind}:{}",
+                settlement_id.replace("settlement:", "")
+            );
+            let entropy = mix64(seed ^ hash_bytes(node_id.as_bytes()) ^ 0xBC);
+            nodes.insert(
+                node_id.clone(),
+                ProductionNodeRuntimeState {
+                    node_id,
+                    settlement_id: settlement_id.clone(),
+                    node_kind: node_kind.to_string(),
+                    input_backlog: 2 + (entropy % 3) as i64,
+                    output_backlog: 1 + (mix64(entropy ^ 0x01) % 3) as i64,
+                    spoilage_timer: 10 + (mix64(entropy ^ 0x02) % 8) as i64,
+                },
+            );
+        }
+    }
+    nodes
 }
 
-fn default_relationship_edges(npcs: &[NpcAgent]) -> BTreeMap<(String, String), RelationshipEdgeRuntime> {
+fn default_relationship_edges(
+    npcs: &[NpcAgent],
+) -> BTreeMap<(String, String), RelationshipEdgeRuntime> {
     let mut edges = BTreeMap::new();
     for source in npcs {
         for target in npcs {
@@ -5491,7 +9590,10 @@ fn default_relationship_edges(npcs: &[NpcAgent]) -> BTreeMap<(String, String), R
                     recent_interaction_tick: 0,
                     compatibility_score: compatibility,
                     shared_context_tags: vec![format!("hobby:{hobby}")],
-                    relation_tags: vec!["acquaintance".to_string(), format!("compat:{compatibility}")],
+                    relation_tags: vec![
+                        "acquaintance".to_string(),
+                        format!("compat:{compatibility}"),
+                    ],
                 },
             );
         }
@@ -5520,43 +9622,51 @@ fn default_beliefs(npcs: &[NpcAgent]) -> BTreeMap<String, Vec<BeliefClaimRuntime
         .collect::<BTreeMap<_, _>>()
 }
 
-fn default_institutions() -> BTreeMap<String, InstitutionRuntimeState> {
-    [
-        ("settlement:greywall".to_string(), 62_i64, 26_i64, 18_i64, 4_i64),
-        ("settlement:millford".to_string(), 56_i64, 30_i64, 22_i64, 5_i64),
-        ("settlement:oakham".to_string(), 58_i64, 24_i64, 20_i64, 4_i64),
-    ]
-    .into_iter()
-    .map(|(settlement_id, enforcement_capacity, corruption_level, bias_level, response_latency)| {
-        (
-            settlement_id,
-            InstitutionRuntimeState {
-                enforcement_capacity,
-                corruption_level,
-                bias_level,
-                response_latency_ticks: response_latency,
-            },
-        )
-    })
-    .collect::<BTreeMap<_, _>>()
+fn default_institutions(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, InstitutionRuntimeState> {
+    let settlements = settlement_ids_from_npcs(npcs);
+    settlements
+        .into_iter()
+        .map(|settlement_id| {
+            let entropy = mix64(seed ^ hash_bytes(settlement_id.as_bytes()) ^ 0xD3);
+            (
+                settlement_id,
+                InstitutionRuntimeState {
+                    enforcement_capacity: 48 + (entropy % 25) as i64,
+                    corruption_level: 15 + (mix64(entropy ^ 0x01) % 22) as i64,
+                    bias_level: 10 + (mix64(entropy ^ 0x02) % 18) as i64,
+                    response_latency_ticks: 3 + (mix64(entropy ^ 0x03) % 4) as i64,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
 }
 
-fn default_groups(npcs: &[NpcAgent]) -> BTreeMap<String, GroupRuntimeState> {
+fn default_groups(npcs: &[NpcAgent], seed: u64) -> BTreeMap<String, GroupRuntimeState> {
     let mut groups = BTreeMap::new();
     if let Some(leader) = npcs.first() {
+        let entropy = mix64(seed ^ hash_bytes(leader.npc_id.as_bytes()) ^ 0xE1);
+        let mut members = npcs
+            .iter()
+            .filter(|npc| npc.location_id == leader.location_id)
+            .take(3)
+            .map(|npc| npc.npc_id.clone())
+            .collect::<Vec<_>>();
+        if !members.iter().any(|member| member == &leader.npc_id) {
+            members.push(leader.npc_id.clone());
+        }
         groups.insert(
             "group:lantern_circle".to_string(),
             GroupRuntimeState {
                 group_id: "group:lantern_circle".to_string(),
                 settlement_id: leader.location_id.clone(),
                 leader_npc_id: leader.npc_id.clone(),
-                member_npc_ids: vec![leader.npc_id.clone()],
+                member_npc_ids: members,
                 norm_tags: vec!["share_news".to_string(), "watch_roads".to_string()],
-                cohesion_score: 34,
+                cohesion_score: 24 + (entropy % 18) as i64,
                 formed_tick: 0,
-                inertia_score: 22,
+                inertia_score: 18 + (mix64(entropy ^ 0x01) % 16) as i64,
                 shared_cause: "shared_watch".to_string(),
-                infiltration_pressure: 4,
+                infiltration_pressure: 2 + (mix64(entropy ^ 0x02) % 6) as i64,
             },
         );
     }
@@ -5582,20 +9692,60 @@ fn default_routes() -> BTreeMap<String, MobilityRouteRuntimeState> {
         ),
     ]
     .into_iter()
-    .map(|(route_id, origin_settlement_id, destination_settlement_id)| {
-        (
-            route_id.clone(),
-            MobilityRouteRuntimeState {
-                route_id,
-                origin_settlement_id,
-                destination_settlement_id,
-                travel_time_ticks: 24,
-                hazard_score: 14,
-                weather_window_open: true,
-            },
-        )
-    })
+    .map(
+        |(route_id, origin_settlement_id, destination_settlement_id)| {
+            (
+                route_id.clone(),
+                MobilityRouteRuntimeState {
+                    route_id,
+                    origin_settlement_id,
+                    destination_settlement_id,
+                    travel_time_ticks: 24,
+                    hazard_score: 14,
+                    weather_window_open: true,
+                },
+            )
+        },
+    )
     .collect::<BTreeMap<_, _>>()
+}
+
+fn default_market_clearing(npcs: &[NpcAgent]) -> BTreeMap<String, MarketClearingRuntimeState> {
+    let mut map = BTreeMap::new();
+    for settlement_id in settlement_ids_from_npcs(npcs) {
+        map.insert(
+            settlement_id.clone(),
+            MarketClearingRuntimeState {
+                settlement_id,
+                staples_price_index: 100,
+                fuel_price_index: 100,
+                medicine_price_index: 100,
+                wage_pressure: 0,
+                shortage_score: 0,
+                unmet_demand: 0,
+                cleared_tick: 0,
+                market_cleared: true,
+            },
+        );
+    }
+    map
+}
+
+fn default_institution_queue(npcs: &[NpcAgent]) -> BTreeMap<String, InstitutionQueueRuntimeState> {
+    let mut map = BTreeMap::new();
+    for settlement_id in settlement_ids_from_npcs(npcs) {
+        map.insert(
+            settlement_id.clone(),
+            InstitutionQueueRuntimeState {
+                settlement_id,
+                pending_cases: 0,
+                processed_cases: 0,
+                dropped_cases: 0,
+                avg_response_latency: 2,
+            },
+        );
+    }
+    map
 }
 
 fn build_top_intents(
@@ -5611,10 +9761,7 @@ fn build_top_intents(
 ) -> Vec<String> {
     let mut intents = Vec::new();
 
-    if law_case_load >= 1
-        || is_wanted
-        || (pressure_index >= 210 && intent_seed % 4 == 0)
-    {
+    if law_case_load >= 1 || is_wanted || (pressure_index >= 210 && intent_seed % 4 == 0) {
         push_unique(&mut intents, "stabilize_security");
     }
 
@@ -5763,11 +9910,361 @@ fn top_pressures(
         let mut pressures = vec!["material_low".to_string(), "security_low".to_string()];
         if winter_severity >= 60 {
             pressures.push("cold_exposure_risk".to_string());
+            pressures.push("seasonal_strain".to_string());
+        }
+        if harvest_shock >= 2 {
+            pressures.push("food_tight".to_string());
         }
         if law_case_load >= 1 {
             pressures.push("institutional_watch".to_string());
         }
         pressures
+    }
+}
+
+fn build_time_budget_for_tick(
+    tick: u64,
+    npc_id: &str,
+    profile: &NpcTraitProfile,
+    is_wanted: bool,
+) -> TimeBudgetRuntimeState {
+    let entropy = mix64(hash_bytes(
+        format!("{tick}:{npc_id}:time_budget").as_bytes(),
+    ));
+    let sleep_hours = 6 + (entropy % 3) as i64;
+    let base_work = 6 + ((entropy >> 8) % 4) as i64;
+    let social_hours = 1 + ((profile.sociability.max(0) as u64 + (entropy >> 16) % 4) % 4) as i64;
+    let care_hours = 1 + ((profile.empathy.max(0) as u64 + (entropy >> 20) % 3) % 3) as i64;
+    let travel_hours = 1 + ((entropy >> 24) % 3) as i64 + is_wanted as i64;
+    let recovery_hours = 1 + ((100 - profile.resilience.clamp(0, 100)) / 25);
+    let work_hours = base_work.clamp(4, 12);
+    let free_hours =
+        (24 - sleep_hours - work_hours - care_hours - travel_hours - social_hours - recovery_hours)
+            .max(0);
+    TimeBudgetRuntimeState {
+        npc_id: npc_id.to_string(),
+        tick,
+        sleep_hours,
+        work_hours,
+        care_hours,
+        travel_hours,
+        social_hours,
+        recovery_hours,
+        free_hours,
+    }
+}
+
+fn action_cadence_window(action: &str) -> u64 {
+    match action {
+        "work_for_coin" | "work_for_food" | "tend_fields" | "craft_goods" => 3,
+        "converse_neighbor" | "share_meal" | "mediate_dispute" | "observe_notable_event" => 4,
+        "lend_coin" | "court_romance" => 6,
+        "seek_treatment" => 8,
+        "pay_rent" => 24,
+        "steal_supplies" => 24,
+        "form_mutual_aid_group" => 24,
+        "seek_shelter" => 8,
+        "spread_accusation" => 12,
+        "trade_visit" => 6,
+        _ => 1,
+    }
+}
+
+fn build_opportunities_from_candidates(
+    tick: u64,
+    decision: &NpcDecision,
+    candidates: &[ActionCandidate],
+    time_budget: &TimeBudgetRuntimeState,
+    rent_due_in_ticks: i64,
+    rent_shortfall: i64,
+    law_case_load: i64,
+) -> Vec<OpportunityRuntimeState> {
+    let mut ranked = candidates.to_vec();
+    ranked.sort_by(|left, right| {
+        (right.priority, right.score, &right.action).cmp(&(left.priority, left.score, &left.action))
+    });
+    let mut selected = Vec::<ActionCandidate>::new();
+    let mut selected_actions = BTreeSet::<String>::new();
+    let mut source_counts = BTreeMap::<&'static str, usize>::new();
+
+    let mut source_heads = BTreeMap::<&'static str, ActionCandidate>::new();
+    for candidate in &ranked {
+        let source = opportunity_source_for_verb(candidate.verb);
+        source_heads
+            .entry(source)
+            .or_insert_with(|| candidate.clone());
+    }
+    for source in [
+        "labor_market",
+        "production_cycle",
+        "social_network",
+        "institution_signal",
+        "local_context",
+    ] {
+        let Some(candidate) = source_heads.get(source) else {
+            continue;
+        };
+        if selected_actions.insert(candidate.action.clone()) {
+            selected.push(candidate.clone());
+            *source_counts.entry(source).or_insert(0) += 1;
+        }
+    }
+
+    for candidate in &ranked {
+        let source = opportunity_source_for_verb(candidate.verb);
+        let quota = opportunity_source_quota(source);
+        if selected_actions.contains(candidate.action.as_str()) {
+            continue;
+        }
+        if source_counts.get(source).copied().unwrap_or_default() >= quota {
+            continue;
+        }
+        selected_actions.insert(candidate.action.clone());
+        *source_counts.entry(source).or_insert(0) += 1;
+        selected.push(candidate.clone());
+        if selected.len() >= 7 {
+            break;
+        }
+    }
+
+    let theft_pressure_active = decision.top_pressures.iter().any(|pressure| {
+        matches!(
+            pressure.as_str(),
+            "rent_deadline"
+                | "debt_strain"
+                | "household_hunger"
+                | "food_tight"
+                | "food_shock"
+                | "seasonal_strain"
+                | "cold_exposure_risk"
+        )
+    });
+    let theft_edge_open = theft_pressure_active
+        && law_case_load <= 4
+        && ((rent_shortfall > 0 && rent_due_in_ticks <= 48)
+            || decision.top_pressures.iter().any(|pressure| {
+                matches!(
+                    pressure.as_str(),
+                    "food_tight" | "food_shock" | "seasonal_strain" | "cold_exposure_risk"
+                )
+            }));
+    if theft_edge_open {
+        if let Some(illicit_candidate) = ranked
+            .iter()
+            .find(|candidate| candidate.action == "steal_supplies")
+            .cloned()
+        {
+            if !selected_actions.contains(illicit_candidate.action.as_str()) {
+                if selected.len() >= 7 {
+                    if let Some(removed) = selected.pop() {
+                        selected_actions.remove(removed.action.as_str());
+                    }
+                }
+                selected_actions.insert(illicit_candidate.action.clone());
+                selected.push(illicit_candidate);
+            }
+        }
+    }
+
+    if selected.len() < 4 {
+        for candidate in ranked {
+            if selected_actions.insert(candidate.action.clone()) {
+                selected.push(candidate);
+            }
+            if selected.len() >= 4 {
+                break;
+            }
+        }
+    }
+
+    selected
+        .into_iter()
+        .enumerate()
+        .map(|(idx, candidate)| {
+            let source = opportunity_source_for_verb(candidate.verb);
+            let mut constraints = Vec::new();
+            if rent_shortfall > 0 && rent_due_in_ticks <= 24 {
+                constraints.push("rent_due_window_active".to_string());
+            }
+            if law_case_load > 0 {
+                constraints.push("institutional_attention_active".to_string());
+            }
+            if time_budget.free_hours <= 1 {
+                constraints.push("time_budget_tight".to_string());
+            }
+            OpportunityRuntimeState {
+                opportunity_id: format!("opp_{:06}_{}_{}", tick, decision.npc_id, idx),
+                npc_id: decision.npc_id.clone(),
+                location_id: decision.location_id.clone(),
+                action: candidate.action.clone(),
+                source: source.to_string(),
+                opened_tick: tick,
+                expires_tick: tick + action_cadence_window(candidate.action.as_str()).max(4),
+                utility_hint: i64::from(candidate.priority) * 100 + (candidate.score / 100) as i64,
+                constraints,
+            }
+        })
+        .collect::<Vec<_>>()
+}
+
+fn cadence_phase_offset(npc_id: &str, action: &str, cadence: u64) -> u64 {
+    if cadence <= 1 {
+        return 0;
+    }
+    let seed = format!("{npc_id}:{action}:cadence_phase");
+    mix64(hash_bytes(seed.as_bytes())) % cadence
+}
+
+fn cadence_exact_window_open(tick: u64, npc_id: &str, action: &str) -> bool {
+    let cadence = action_cadence_window(action).max(1);
+    if cadence <= 1 {
+        return true;
+    }
+    (tick + cadence_phase_offset(npc_id, action, cadence)) % cadence == 0
+}
+
+fn cadence_relaxed_window_open(tick: u64, npc_id: &str, action: &str) -> bool {
+    let cadence = action_cadence_window(action).max(1);
+    if cadence <= 1 {
+        return true;
+    }
+    let cadence_offset = (tick + cadence_phase_offset(npc_id, action, cadence)) % cadence;
+    if matches!(action, "pay_rent" | "steal_supplies") {
+        return cadence_offset == 0;
+    }
+    if cadence >= 12 {
+        cadence_offset <= 1 || cadence.saturating_sub(cadence_offset) <= 1
+    } else {
+        cadence_offset <= 2 || cadence.saturating_sub(cadence_offset) <= 2
+    }
+}
+
+fn constrain_candidates_by_opportunities(
+    tick: u64,
+    npc_id: &str,
+    candidates: &[ActionCandidate],
+    opportunities: &[OpportunityRuntimeState],
+) -> Vec<ActionCandidate> {
+    let allowed = opportunities
+        .iter()
+        .map(|entry| entry.action.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut constrained = candidates
+        .iter()
+        .filter(|candidate| {
+            allowed.contains(candidate.action.as_str())
+                && cadence_exact_window_open(tick, npc_id, candidate.action.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if constrained.len() >= 3 {
+        return constrained;
+    }
+
+    let mut ranked_relaxed = candidates
+        .iter()
+        .filter(|candidate| allowed.contains(candidate.action.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    ranked_relaxed.sort_by(|left, right| {
+        (right.priority, right.score, &right.action).cmp(&(left.priority, left.score, &left.action))
+    });
+    let mut seen = constrained
+        .iter()
+        .map(|candidate| candidate.action.clone())
+        .collect::<BTreeSet<_>>();
+    for candidate in ranked_relaxed {
+        if seen.contains(candidate.action.as_str()) {
+            continue;
+        }
+        if cadence_relaxed_window_open(tick, npc_id, candidate.action.as_str()) {
+            seen.insert(candidate.action.clone());
+            constrained.push(candidate);
+        }
+        if constrained.len() >= 4 {
+            return constrained;
+        }
+    }
+
+    constrained
+}
+
+fn opportunity_source_for_verb(verb: AffordanceVerb) -> &'static str {
+    match verb {
+        AffordanceVerb::WorkForCoin | AffordanceVerb::WorkForFood => "labor_market",
+        AffordanceVerb::PayRent | AffordanceVerb::SeekShelter | AffordanceVerb::SeekTreatment => {
+            "household_need"
+        }
+        AffordanceVerb::TendFields | AffordanceVerb::CraftGoods => "production_cycle",
+        AffordanceVerb::PatrolRoad | AffordanceVerb::CollectTestimony => "institution_signal",
+        AffordanceVerb::ShareMeal
+        | AffordanceVerb::ConverseNeighbor
+        | AffordanceVerb::LendCoin
+        | AffordanceVerb::CourtRomance
+        | AffordanceVerb::FormMutualAidGroup => "social_network",
+        _ => "local_context",
+    }
+}
+
+fn opportunity_source_quota(source: &str) -> usize {
+    match source {
+        "production_cycle" => 2,
+        "labor_market" => 2,
+        "household_need" => 2,
+        "social_network" => 1,
+        "institution_signal" => 1,
+        _ => 1,
+    }
+}
+
+fn commitment_family_for_action(action: &str) -> &'static str {
+    match action {
+        "pay_rent" => "rent",
+        "seek_shelter" => "shelter",
+        "work_for_coin" | "work_for_food" | "tend_fields" | "craft_goods" | "trade_visit"
+        | "forage" => "livelihood",
+        "converse_neighbor"
+        | "lend_coin"
+        | "court_romance"
+        | "share_meal"
+        | "form_mutual_aid_group"
+        | "mediate_dispute"
+        | "defend_patron"
+        | "train_apprentice" => "social",
+        "investigate_rumor"
+        | "share_rumor"
+        | "question_travelers"
+        | "spread_accusation"
+        | "observe_notable_event" => "information",
+        "patrol_road" | "organize_watch" | "collect_testimony" | "avoid_patrols" => "security",
+        "steal_supplies" | "fence_goods" => "illicit",
+        "repair_hearth" | "gather_firewood" | "ration_grain" | "seek_treatment" => "survival",
+        _ => "general",
+    }
+}
+
+fn build_commitment_state(tick: u64, npc_id: &str, action_family: &str) -> CommitmentRuntimeState {
+    let cadence_ticks = match action_family {
+        "rent" => 24,
+        "shelter" => 16,
+        "livelihood" => 12,
+        "social" => 12,
+        "information" => 10,
+        "security" => 12,
+        "survival" => 8,
+        "illicit" => 10,
+        _ => 8,
+    };
+    CommitmentRuntimeState {
+        commitment_id: format!("commit_{:06}_{npc_id}_{}", tick, action_family),
+        npc_id: npc_id.to_string(),
+        action_family: action_family.to_string(),
+        started_tick: tick,
+        due_tick: tick + cadence_ticks,
+        cadence_ticks,
+        progress_ticks: 1,
+        inertia_score: 96,
+        status: "active".to_string(),
     }
 }
 
@@ -5785,6 +10282,8 @@ fn build_action_candidates<F>(
     wallet: i64,
     debt_balance: i64,
     food_reserve_days: i64,
+    health: i64,
+    illness_ticks: i64,
     dependents_count: i64,
     shelter_status: ShelterStatus,
     contract_reliability: i64,
@@ -5794,6 +10293,7 @@ fn build_action_candidates<F>(
     rent_cadence_ticks: i64,
     trust_support: i64,
     local_theft_pressure: i64,
+    local_conflict_pressure: i64,
     local_support_need: i64,
     low_pressure_economic_opportunity: i64,
     profile: &NpcTraitProfile,
@@ -5802,7 +10302,11 @@ fn build_action_candidates<F>(
 where
     F: Fn(u64, &str, &str) -> u64,
 {
-    let security_need = law_case_load > 0 || local_theft_pressure >= 2 || is_wanted;
+    let security_need = law_case_load > 0
+        || local_theft_pressure >= 2
+        || local_conflict_pressure >= 2
+        || is_wanted;
+    let social_safe = local_conflict_pressure <= 2 && law_case_load <= 3;
     let mut base = vec![
         candidate(AffordanceVerb::WorkForFood, 2, -1, tick, npc_id, &stream),
         candidate(AffordanceVerb::WorkForCoin, 3, -2, tick, npc_id, &stream),
@@ -5810,13 +10314,36 @@ where
         candidate(AffordanceVerb::TendFields, 2, -1, tick, npc_id, &stream),
         candidate(AffordanceVerb::CraftGoods, 2, 0, tick, npc_id, &stream),
         candidate(AffordanceVerb::ShareMeal, 1, -1, tick, npc_id, &stream),
-        candidate(AffordanceVerb::FormMutualAidGroup, 1, -1, tick, npc_id, &stream),
+        candidate(
+            AffordanceVerb::FormMutualAidGroup,
+            1,
+            -1,
+            tick,
+            npc_id,
+            &stream,
+        ),
         candidate(AffordanceVerb::DefendPatron, 1, -1, tick, npc_id, &stream),
-        candidate(AffordanceVerb::SpreadAccusation, 1, 1, tick, npc_id, &stream),
+        candidate(
+            AffordanceVerb::SpreadAccusation,
+            1,
+            1,
+            tick,
+            npc_id,
+            &stream,
+        ),
         candidate(AffordanceVerb::MediateDispute, 1, -1, tick, npc_id, &stream),
-        candidate(AffordanceVerb::TrainApprentice, 1, -1, tick, npc_id, &stream),
+        candidate(
+            AffordanceVerb::TrainApprentice,
+            1,
+            -1,
+            tick,
+            npc_id,
+            &stream,
+        ),
         candidate(AffordanceVerb::ShareRumor, 2, 1, tick, npc_id, &stream),
         candidate(AffordanceVerb::PatrolRoad, 2, -1, tick, npc_id, &stream),
+        candidate(AffordanceVerb::ConverseNeighbor, 2, -1, tick, npc_id, &stream),
+        candidate(AffordanceVerb::ObserveNotableEvent, 1, 0, tick, npc_id, &stream),
         candidate(AffordanceVerb::Forage, 1, 0, tick, npc_id, &stream),
     ];
 
@@ -5828,6 +10355,117 @@ where
         base.push(candidate(
             AffordanceVerb::StealSupplies,
             2,
+            1,
+            tick,
+            npc_id,
+            &stream,
+        ));
+    }
+
+    let constrained_theft_window = !is_wanted
+        && !has_stolen_item
+        && law_case_load <= 4
+        && wallet <= 3
+        && profile.risk_tolerance >= 50
+        && trust_support <= 2
+        && local_theft_pressure <= 2
+        && ((food_reserve_days <= 2)
+            || (rent_shortfall > 0 && rent_due_in_ticks <= 24 && eviction_risk >= 30))
+        && ((rent_shortfall > 0 && rent_due_in_ticks <= 48)
+            || debt_balance >= 4
+            || eviction_risk >= 70
+            || harvest_shock >= 2
+            || winter_severity >= 70);
+    if constrained_theft_window {
+        let theft_roll = stream(tick, npc_id, "edge_theft_window") % 100;
+        if theft_roll < 25 {
+            base.push(candidate(
+                AffordanceVerb::StealSupplies,
+                3,
+                1,
+                tick,
+                npc_id,
+                &stream,
+            ));
+        }
+    }
+
+    let opportunistic_theft_window = !is_wanted
+        && !has_stolen_item
+        && law_case_load <= 3
+        && wallet <= 0
+        && profile.risk_tolerance >= 60
+        && rent_shortfall > 0
+        && rent_due_in_ticks <= 72;
+    if opportunistic_theft_window {
+        let theft_roll = stream(tick, npc_id, "opportunistic_theft_window") % 100;
+        if theft_roll < 8 {
+            base.push(candidate(
+                AffordanceVerb::StealSupplies,
+                4,
+                1,
+                tick,
+                npc_id,
+                &stream,
+            ));
+        }
+    }
+
+    let volitional_theft_window = !is_wanted
+        && !has_stolen_item
+        && law_case_load <= 3
+        && profile.risk_tolerance >= 74
+        && profile.ambition >= 64
+        && profile.empathy <= 42
+        && top_intents.iter().any(|intent| intent == "seek_opportunity")
+        && trust_support <= 1
+        && wallet <= 5;
+    if volitional_theft_window {
+        let theft_roll = stream(tick, npc_id, "volitional_theft_window") % 100;
+        if theft_roll < 12 {
+            base.push(candidate(
+                AffordanceVerb::StealSupplies,
+                5,
+                1,
+                tick,
+                npc_id,
+                &stream,
+            ));
+        }
+    }
+
+    let scarcity_theft_window = !is_wanted
+        && !has_stolen_item
+        && law_case_load <= 4
+        && local_theft_pressure <= 2
+        && trust_support <= 2
+        && profile.risk_tolerance >= 52
+        && wallet <= 2
+        && (harvest_shock >= 2 || winter_severity >= 70);
+    if scarcity_theft_window {
+        let theft_roll = stream(tick, npc_id, "scarcity_theft_window") % 100;
+        if theft_roll < 35 {
+            base.push(candidate(
+                AffordanceVerb::StealSupplies,
+                5,
+                1,
+                tick,
+                npc_id,
+                &stream,
+            ));
+        }
+    }
+
+    let stress_desperation_theft = !is_wanted
+        && !has_stolen_item
+        && law_case_load <= 4
+        && (harvest_shock >= 2 || winter_severity >= 70)
+        && (wallet <= 2 || debt_balance >= 3 || rent_shortfall > 0)
+        && trust_support <= 2;
+    if stress_desperation_theft {
+        base.push(candidate(
+            AffordanceVerb::StealSupplies,
+            6,
             1,
             tick,
             npc_id,
@@ -5852,6 +10490,47 @@ where
     if top_intents.iter().any(|intent| intent == "store_fuel") {
         base.push(candidate(
             AffordanceVerb::GatherFirewood,
+            3,
+            -1,
+            tick,
+            npc_id,
+            &stream,
+        ));
+    }
+
+    if top_intents
+        .iter()
+        .any(|intent| intent == "seek_companionship")
+        && social_safe
+        && food_reserve_days >= 2
+        && !matches!(shelter_status, ShelterStatus::Unsheltered)
+    {
+        base.push(candidate(
+            AffordanceVerb::CourtRomance,
+            2 + ((profile.romance_drive / 20).clamp(0, 2) as i32),
+            0,
+            tick,
+            npc_id,
+            &stream,
+        ));
+    }
+
+    if top_intents
+        .iter()
+        .any(|intent| intent == "exchange_stories")
+        || rumor_heat >= 2
+        || local_conflict_pressure >= 2
+    {
+        base.push(candidate(
+            AffordanceVerb::ObserveNotableEvent,
+            2,
+            1,
+            tick,
+            npc_id,
+            &stream,
+        ));
+        base.push(candidate(
+            AffordanceVerb::ConverseNeighbor,
             3,
             -1,
             tick,
@@ -5889,11 +10568,7 @@ where
         ));
     }
 
-    if top_intents
-        .iter()
-        .any(|intent| intent == "liquidate_goods")
-        || has_stolen_item
-    {
+    if top_intents.iter().any(|intent| intent == "liquidate_goods") || has_stolen_item {
         base.push(candidate(
             AffordanceVerb::FenceGoods,
             4,
@@ -5991,6 +10666,20 @@ where
         ));
     }
 
+    if health <= 65
+        || illness_ticks > 0
+        || (winter_severity >= 70 && matches!(shelter_status, ShelterStatus::Precarious))
+    {
+        base.push(candidate(
+            AffordanceVerb::SeekTreatment,
+            4,
+            -2,
+            tick,
+            npc_id,
+            &stream,
+        ));
+    }
+
     if pressure_index <= 0 {
         base.push(candidate(
             AffordanceVerb::TradeVisit,
@@ -6027,7 +10716,9 @@ where
             npc_id,
             &stream,
         ));
-        if low_pressure_economic_opportunity >= 4 {
+        if low_pressure_economic_opportunity >= 6
+            && (wallet <= 1 || debt_balance >= 2 || rent_shortfall > 0)
+        {
             base.push(candidate(
                 AffordanceVerb::WorkForCoin,
                 4,
@@ -6039,9 +10730,7 @@ where
         }
     }
 
-    if top_intents.iter().any(|intent| intent == "seek_income")
-        || wallet <= 1
-        || debt_balance >= 3
+    if top_intents.iter().any(|intent| intent == "seek_income") || wallet <= 1 || debt_balance >= 3
     {
         base.push(candidate(
             AffordanceVerb::WorkForCoin,
@@ -6104,10 +10793,11 @@ where
         ));
     }
 
-    if rent_shortfall > 0 && wallet >= 2 && rent_due_in_ticks <= 6 {
+    if rent_shortfall > 0 && wallet >= 1 && rent_due_in_ticks <= 24 {
+        let priority = if rent_due_in_ticks <= 6 { 6 } else { 5 };
         base.push(candidate(
             AffordanceVerb::PayRent,
-            6,
+            priority,
             -2,
             tick,
             npc_id,
@@ -6145,19 +10835,25 @@ where
         ));
     }
 
-    if local_support_need > 0
-        && trust_support > 0
-        && food_reserve_days > 1
-        && debt_balance < 4
-    {
+    if local_support_need > 0 && trust_support > 0 && food_reserve_days > 1 && debt_balance < 4 {
         base.push(candidate(
-            AffordanceVerb::AssistNeighbor,
-            2 + (local_support_need.min(3) as i32),
+            AffordanceVerb::ConverseNeighbor,
+            2 + (local_support_need.min(2) as i32),
             -1,
             tick,
             npc_id,
             &stream,
         ));
+        if wallet >= 3 && profile.generosity >= 55 {
+            base.push(candidate(
+                AffordanceVerb::LendCoin,
+                2 + (local_support_need.min(2) as i32),
+                -1,
+                tick,
+                npc_id,
+                &stream,
+            ));
+        }
     }
 
     if !security_need {
@@ -6240,7 +10936,7 @@ fn apply_personality_bias(
     shelter_status: ShelterStatus,
     is_wanted: bool,
     security_need: bool,
-    local_support_need: i64,
+    _local_support_need: i64,
     food_reserve_days: i64,
     debt_balance: i64,
 ) {
@@ -6256,22 +10952,48 @@ fn apply_personality_bias(
             }
             AffordanceVerb::ShareMeal
             | AffordanceVerb::MediateDispute
-            | AffordanceVerb::FormMutualAidGroup => {
+            | AffordanceVerb::FormMutualAidGroup
+            | AffordanceVerb::ConverseNeighbor => {
                 if profile.empathy >= 60 || profile.sociability >= 60 {
                     candidate.priority += 1;
                     candidate.score = candidate.score.saturating_add(260);
                 }
             }
-            AffordanceVerb::AssistNeighbor => {
-                if (profile.empathy >= 65 || profile.sociability >= 65) && local_support_need > 0 {
+            AffordanceVerb::LendCoin => {
+                if profile.generosity >= 58 && profile.empathy >= 50 {
+                    candidate.priority += 1;
+                    candidate.score = candidate.score.saturating_add(220);
+                } else {
+                    candidate.score = candidate.score.saturating_sub(900);
+                }
+                if debt_balance >= 3 || food_reserve_days <= 1 {
+                    candidate.score = candidate.score.saturating_sub(1_000);
+                }
+            }
+            AffordanceVerb::CourtRomance => {
+                if profile.romance_drive >= 58 && profile.sociability >= 45 {
                     candidate.priority += 1;
                     candidate.score = candidate.score.saturating_add(180);
                 } else {
                     candidate.score = candidate.score.saturating_sub(700);
                 }
-                if debt_balance >= 3 || food_reserve_days <= 1 {
-                    candidate.score = candidate.score.saturating_sub(900);
+                if profile.aggression >= 70 && profile.patience <= 40 {
+                    candidate.score = candidate.score.saturating_sub(450);
                 }
+            }
+            AffordanceVerb::ObserveNotableEvent => {
+                if profile.gossip_drive >= 55 || profile.ambition >= 55 {
+                    candidate.score = candidate.score.saturating_add(180);
+                }
+            }
+            AffordanceVerb::SeekTreatment => {
+                if profile.patience >= 45 || profile.resilience <= 45 {
+                    candidate.priority += 1;
+                    candidate.score = candidate.score.saturating_add(220);
+                }
+            }
+            AffordanceVerb::AssistNeighbor => {
+                candidate.score = candidate.score.saturating_sub(4_000);
             }
             AffordanceVerb::OrganizeWatch
             | AffordanceVerb::PatrolRoad
@@ -6294,12 +11016,19 @@ fn apply_personality_bias(
                 }
             }
             AffordanceVerb::StealSupplies | AffordanceVerb::FenceGoods => {
-                if profile.risk_tolerance <= 40 || profile.empathy >= 65 {
+                if profile.risk_tolerance <= 35 || profile.empathy >= 78 {
                     candidate.priority -= 2;
                     candidate.score = candidate.score.saturating_sub(1400);
-                } else if profile.risk_tolerance >= 68 && food_reserve_days <= 1 {
+                } else if profile.risk_tolerance >= 62 && food_reserve_days <= 2 {
                     candidate.priority += 1;
                     candidate.score = candidate.score.saturating_add(240);
+                }
+                if profile.risk_tolerance >= 74
+                    && profile.ambition >= 64
+                    && profile.empathy <= 42
+                {
+                    candidate.priority += 1;
+                    candidate.score = candidate.score.saturating_add(900);
                 }
             }
             AffordanceVerb::AvoidPatrols => {
@@ -6345,14 +11074,19 @@ where
         verb,
         action: action.to_string(),
         priority,
-        score: stream(tick, npc_id, action) % 10_000,
+        score: 1_200 + (stream(tick, npc_id, action) % 256),
         pressure_effect,
     }
 }
 
-fn choose_candidate(candidates: &[ActionCandidate]) -> Option<ActionCandidate> {
-    candidates.iter().cloned().max_by(|left, right| {
-        (left.priority, left.score, &left.action).cmp(&(right.priority, right.score, &right.action))
+fn decision_has_emergency_pressure(decision: &NpcDecision) -> bool {
+    decision.top_intents.iter().any(|intent| {
+        matches!(
+            intent.as_str(),
+            "secure_food" | "seek_shelter" | "evade_patrols"
+        )
+    }) || decision.top_pressures.iter().any(|pressure| {
+        matches!(pressure.as_str(), "household_hunger" | "shelter_instability")
     })
 }
 
@@ -6419,7 +11153,10 @@ fn infer_motive_families(
         push_unique_motive(&mut motives, MotiveFamily::Attachment);
     }
 
-    if top_intents.iter().any(|intent| intent == "seek_opportunity") {
+    if top_intents
+        .iter()
+        .any(|intent| intent == "seek_opportunity")
+    {
         push_unique_motive(&mut motives, MotiveFamily::Ambition);
     }
 
@@ -6470,10 +11207,23 @@ fn infer_motive_families(
         }
         AffordanceVerb::FormMutualAidGroup
         | AffordanceVerb::ShareMeal
+        | AffordanceVerb::ConverseNeighbor
+        | AffordanceVerb::LendCoin
         | AffordanceVerb::MediateDispute
         | AffordanceVerb::DefendPatron => {
             push_unique_motive(&mut motives, MotiveFamily::Belonging);
             push_unique_motive(&mut motives, MotiveFamily::Attachment);
+        }
+        AffordanceVerb::CourtRomance => {
+            push_unique_motive(&mut motives, MotiveFamily::Attachment);
+            push_unique_motive(&mut motives, MotiveFamily::Ambition);
+        }
+        AffordanceVerb::SeekTreatment => {
+            push_unique_motive(&mut motives, MotiveFamily::Survival);
+            push_unique_motive(&mut motives, MotiveFamily::Security);
+        }
+        AffordanceVerb::ObserveNotableEvent => {
+            push_unique_motive(&mut motives, MotiveFamily::CuriosityMeaning);
         }
         AffordanceVerb::SpreadAccusation => {
             push_unique_motive(&mut motives, MotiveFamily::JusticeGrievance);
@@ -6482,10 +11232,6 @@ fn infer_motive_families(
         AffordanceVerb::TrainApprentice => {
             push_unique_motive(&mut motives, MotiveFamily::CuriosityMeaning);
             push_unique_motive(&mut motives, MotiveFamily::Dignity);
-        }
-        AffordanceVerb::AssistNeighbor => {
-            push_unique_motive(&mut motives, MotiveFamily::Attachment);
-            push_unique_motive(&mut motives, MotiveFamily::Belonging);
         }
         _ => {}
     }
@@ -6552,9 +11298,11 @@ fn apply_action_memory_bias(
     tick: u64,
     shelter_status: ShelterStatus,
     food_reserve_days: i64,
+    debt_balance: i64,
     eviction_risk: i64,
     local_theft_pressure: i64,
     local_support_need: i64,
+    theft_desperation: bool,
     profile: &NpcTraitProfile,
 ) {
     let Some(memory) = action_memory else {
@@ -6585,8 +11333,18 @@ fn apply_action_memory_bias(
         }
 
         if candidate.action == "steal_supplies" {
-            if food_reserve_days >= 2 {
+            if !theft_desperation && food_reserve_days >= 2 && eviction_risk < 75 {
                 candidate.score = candidate.score.saturating_sub(2_300);
+            }
+            if theft_desperation && profile.risk_tolerance >= 55 && law_case_load <= 2 {
+                candidate.score = candidate.score.saturating_add(1_100);
+            }
+            if eviction_risk >= 80
+                && local_support_need > 0
+                && profile.risk_tolerance >= 60
+                && law_case_load <= 2
+            {
+                candidate.score = candidate.score.saturating_add(550);
             }
             if let Some(last_theft_tick) = memory.last_theft_tick {
                 if tick.saturating_sub(last_theft_tick) < 24 {
@@ -6612,15 +11370,37 @@ fn apply_action_memory_bias(
             }
         }
 
-        if candidate.action == "assist_neighbor" {
+        if candidate.action == "converse_neighbor" || candidate.action == "lend_coin" {
             if local_support_need <= 0 {
                 candidate.score = candidate.score.saturating_sub(1_600);
             }
-            if memory.last_action.as_deref() == Some("assist_neighbor")
+            if memory.last_action.as_deref() == Some(candidate.action.as_str())
                 && tick.saturating_sub(memory.last_action_tick) < 18
             {
                 candidate.score = candidate.score.saturating_sub(1_900);
             }
+        }
+
+        if candidate.action == "court_romance" {
+            if food_reserve_days <= 1 || debt_balance >= 4 {
+                candidate.score = candidate.score.saturating_sub(1_300);
+            }
+            if memory.last_action.as_deref() == Some("court_romance")
+                && tick.saturating_sub(memory.last_action_tick) < 24
+            {
+                candidate.score = candidate.score.saturating_sub(1_700);
+            }
+        }
+
+        if candidate.action == "observe_notable_event"
+            && memory.last_action.as_deref() == Some("observe_notable_event")
+            && tick.saturating_sub(memory.last_action_tick) < 4
+        {
+            candidate.score = candidate.score.saturating_sub(900);
+        }
+
+        if candidate.action == "seek_treatment" && food_reserve_days >= 3 && debt_balance <= 1 {
+            candidate.score = candidate.score.saturating_sub(450);
         }
 
         if candidate.action == "seek_shelter" {
@@ -6681,12 +11461,78 @@ fn cadence_interval_ticks(cadence: ContractCadence) -> u64 {
 
 fn narrative_default_alternatives(chosen_action: &str) -> Vec<String> {
     match chosen_action {
-        "assist_neighbor" => vec!["work_for_coin".to_string(), "trade_visit".to_string()],
+        "converse_neighbor" => vec!["work_for_coin".to_string(), "trade_visit".to_string()],
+        "lend_coin" => vec!["converse_neighbor".to_string(), "share_meal".to_string()],
+        "court_romance" => vec!["converse_neighbor".to_string(), "share_meal".to_string()],
         "work_for_coin" => vec!["craft_goods".to_string(), "tend_fields".to_string()],
         "pay_rent" => vec!["work_for_coin".to_string(), "work_for_food".to_string()],
         "seek_shelter" => vec!["work_for_food".to_string(), "trade_visit".to_string()],
         "spread_accusation" => vec!["mediate_dispute".to_string(), "share_rumor".to_string()],
-        _ => vec!["evaluate_other_options".to_string(), "delay_action".to_string()],
+        _ => vec![
+            "evaluate_other_options".to_string(),
+            "delay_action".to_string(),
+        ],
+    }
+}
+
+fn social_topic_for_action(action: &str) -> &'static str {
+    match action {
+        "work_for_coin" => "took_paid_shift",
+        "work_for_food" => "worked_for_board",
+        "tend_fields" => "fieldwork_progress",
+        "craft_goods" => "workshop_output",
+        "trade_visit" => "market_visit",
+        "converse_neighbor" => "street_conversation",
+        "lend_coin" => "small_loan",
+        "court_romance" => "courtship_gesture",
+        "share_rumor" => "rumor_exchange",
+        "investigate_rumor" => "rumor_check",
+        "observe_notable_event" => "public_noticing",
+        "seek_treatment" => "healer_visit",
+        "steal_supplies" => "petty_theft",
+        "pay_rent" => "rent_settlement",
+        "form_mutual_aid_group" => "group_coordination",
+        "mediate_dispute" => "dispute_mediation",
+        "patrol_road" | "organize_watch" => "watch_activity",
+        _ => "daily_activity",
+    }
+}
+
+fn observation_topic_for_event(
+    event_type: EventType,
+    source_tags: &[String],
+    details: Option<&Value>,
+    chosen_action: Option<&str>,
+) -> String {
+    if let Some(topic) = details
+        .and_then(|entry| entry.get("topic"))
+        .and_then(Value::as_str)
+    {
+        return topic.to_string();
+    }
+    if source_tags.iter().any(|tag| tag == "festival") {
+        return "seasonal_festival".to_string();
+    }
+    if source_tags.iter().any(|tag| tag == "mayor_tour") {
+        return "civic_visit".to_string();
+    }
+
+    match event_type {
+        EventType::TheftCommitted => "witnessed_theft".to_string(),
+        EventType::ArrestMade => "watched_arrest".to_string(),
+        EventType::BrawlStarted => "saw_brawl".to_string(),
+        EventType::PunchThrown => "saw_punch".to_string(),
+        EventType::InsultExchanged => "heard_insults".to_string(),
+        EventType::GuardsDispatched => "guards_called".to_string(),
+        EventType::StockShortage | EventType::MarketFailed => "market_stress".to_string(),
+        EventType::StockRecovered | EventType::MarketCleared => "market_recovery".to_string(),
+        EventType::RomanceAdvanced => "public_courtship".to_string(),
+        EventType::ConversationHeld => "street_conversation".to_string(),
+        EventType::NpcActionCommitted => chosen_action
+            .map(social_topic_for_action)
+            .unwrap_or("daily_activity")
+            .to_string(),
+        _ => "street_notice".to_string(),
     }
 }
 
@@ -6710,6 +11556,36 @@ fn decrease_signal(map: &mut BTreeMap<String, i64>, key: &str, amount: i64) {
             map.remove(key);
         }
     }
+}
+
+fn canonical_pair_key(left_npc_id: &str, right_npc_id: &str) -> (String, String) {
+    if left_npc_id <= right_npc_id {
+        (left_npc_id.to_string(), right_npc_id.to_string())
+    } else {
+        (right_npc_id.to_string(), left_npc_id.to_string())
+    }
+}
+
+fn pick_weighted_index(roll: u64, weights: &[i64]) -> Option<usize> {
+    if weights.is_empty() {
+        return None;
+    }
+    let total = weights.iter().map(|weight| (*weight).max(0) as u64).sum::<u64>();
+    if total == 0 {
+        return Some((roll % (weights.len() as u64)) as usize);
+    }
+    let mut cursor = roll % total;
+    for (idx, weight) in weights.iter().enumerate() {
+        let clamped = (*weight).max(0) as u64;
+        if clamped == 0 {
+            continue;
+        }
+        if cursor < clamped {
+            return Some(idx);
+        }
+        cursor -= clamped;
+    }
+    Some(weights.len() - 1)
 }
 
 fn apply_case_delta(map: &mut BTreeMap<String, i64>, settlement_id: &str, delta: i64) {
@@ -6779,9 +11655,16 @@ mod tests {
     use contracts::{CommandType, RegionId};
     use serde_json::Value;
 
+    fn test_config() -> RunConfig {
+        let mut config = RunConfig::default();
+        config.npc_count_min = 3;
+        config.npc_count_max = 3;
+        config
+    }
+
     #[test]
     fn stepping_advances_tick_and_emits_npc_actions() {
-        let mut kernel = Kernel::new(RunConfig::default());
+        let mut kernel = Kernel::new(test_config());
         assert_eq!(kernel.status().current_tick, 0);
 
         let did_step = kernel.step_tick();
@@ -6797,7 +11680,7 @@ mod tests {
 
     #[test]
     fn deterministic_replay_same_seed_same_commands() {
-        let mut config = RunConfig::default();
+        let mut config = test_config();
         config.region_id = RegionId::Crownvale;
 
         let command = Command::new(
@@ -6826,7 +11709,7 @@ mod tests {
 
     #[test]
     fn command_ordering_uses_effective_tick_then_sequence() {
-        let config = RunConfig::default();
+        let config = test_config();
         let run_id = config.run_id.clone();
 
         let mut kernel = Kernel::new(config);
@@ -6874,7 +11757,7 @@ mod tests {
 
     #[test]
     fn npc_actions_include_reason_packet_references() {
-        let mut kernel = Kernel::new(RunConfig::default());
+        let mut kernel = Kernel::new(test_config());
         kernel.run_to_tick(4);
 
         let npc_events = kernel
@@ -6915,7 +11798,7 @@ mod tests {
 
     #[test]
     fn scenario_injectors_create_persistent_pressure_signals() {
-        let config = RunConfig::default();
+        let config = test_config();
         let run_id = config.run_id.clone();
         let mut kernel = Kernel::new(config);
 
@@ -6993,7 +11876,7 @@ mod tests {
 
     #[test]
     fn remove_npc_reduces_future_action_count() {
-        let base_config = RunConfig::default();
+        let base_config = test_config();
 
         let mut baseline = Kernel::new(base_config.clone());
         baseline.run_to_tick(4);
@@ -7034,7 +11917,7 @@ mod tests {
 
     #[test]
     fn caravan_command_moves_story_item_between_settlements() {
-        let config = RunConfig::default();
+        let config = test_config();
         let run_id = config.run_id.clone();
         let mut kernel = Kernel::new(config);
         kernel.npcs.clear();
@@ -7091,7 +11974,7 @@ mod tests {
 
     #[test]
     fn justice_loop_emits_investigation_and_arrest_events() {
-        let mut kernel = Kernel::new(RunConfig::default());
+        let mut kernel = Kernel::new(test_config());
         kernel
             .law_case_load_by_settlement
             .insert("settlement:greywall".to_string(), 3);
@@ -7121,7 +12004,7 @@ mod tests {
 
     #[test]
     fn discovery_loop_emits_discovery_and_leverage_chain() {
-        let mut kernel = Kernel::new(RunConfig::default());
+        let mut kernel = Kernel::new(test_config());
         kernel.enqueue_command(
             Command::new(
                 "cmd_rumor_discovery",
@@ -7157,7 +12040,7 @@ mod tests {
 
     #[test]
     fn relationship_loop_emits_shift_event() {
-        let mut kernel = Kernel::new(RunConfig::default());
+        let mut kernel = Kernel::new(test_config());
         kernel.run_to_tick(18);
 
         assert!(kernel

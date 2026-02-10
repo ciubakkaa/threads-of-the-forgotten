@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_API_BASE =
   (import.meta as ImportMeta & { env?: { VITE_API_BASE?: string } }).env?.
@@ -69,7 +69,19 @@ const TIMELINE_EVENT_TYPES = [
   "succession_transferred",
   "route_risk_updated",
   "travel_window_shifted",
-  "narrative_why_summary"
+  "narrative_why_summary",
+  "opportunity_opened",
+  "opportunity_expired",
+  "opportunity_accepted",
+  "opportunity_rejected",
+  "commitment_started",
+  "commitment_continued",
+  "commitment_completed",
+  "commitment_broken",
+  "market_cleared",
+  "market_failed",
+  "accounting_transfer_recorded",
+  "institution_queue_updated"
 ] as const;
 
 type RegionId = (typeof REGION_OPTIONS)[number];
@@ -98,6 +110,8 @@ interface RunConfig {
   duration_days: number;
   region_id: RegionId;
   snapshot_every_ticks: number;
+  npc_count_min: number;
+  npc_count_max: number;
 }
 
 interface CreateRunResponse {
@@ -205,6 +219,9 @@ interface NpcInspectorData {
   contract_status?: Array<Record<string, unknown>>;
   relationship_edges?: Array<Record<string, unknown>>;
   active_beliefs?: Array<Record<string, unknown>>;
+  opportunities?: Array<Record<string, unknown>>;
+  commitments?: Array<Record<string, unknown>>;
+  time_budget?: Record<string, unknown> | null;
   motive_chain?: string[];
   why_summaries?: Array<Record<string, unknown>>;
 }
@@ -221,6 +238,9 @@ interface SettlementInspectorData {
   production_nodes?: Array<Record<string, unknown>>;
   groups?: Array<Record<string, unknown>>;
   routes?: Array<Record<string, unknown>>;
+  market_clearing?: Record<string, unknown>;
+  institution_queue?: Record<string, unknown>;
+  accounting_transfers?: Array<Record<string, unknown>>;
   notable_events: EventRecord[];
 }
 
@@ -404,6 +424,112 @@ function extractPressureIndex(event: EventRecord): number {
   return 0;
 }
 
+function mergeEventsById(current: EventRecord[], incoming: EventRecord[]): EventRecord[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const byId = new Map<string, EventRecord>();
+  for (const event of current) {
+    byId.set(event.event_id, event);
+  }
+  for (const event of incoming) {
+    byId.set(event.event_id, event);
+  }
+
+  return Array.from(byId.values()).sort((left, right) => {
+    if (left.tick !== right.tick) {
+      return left.tick - right.tick;
+    }
+    return left.sequence_in_tick - right.sequence_in_tick;
+  });
+}
+
+function eventActorLabel(event: EventRecord): string {
+  const actor = event.actors?.[0];
+  if (!actor) {
+    return "system";
+  }
+  return `${actor.actor_kind}:${actor.actor_id}`;
+}
+
+function eventPrimaryTopic(event: EventRecord): string {
+  const details = event.details ?? {};
+  const topic = details["topic"];
+  if (typeof topic === "string" && topic.length > 0) {
+    return topic;
+  }
+  const chosenAction = details["chosen_action"];
+  if (typeof chosenAction === "string" && chosenAction.length > 0) {
+    return chosenAction;
+  }
+  return formatEventType(event.event_type);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function compactValue(value: unknown): string {
+  if (value == null) {
+    return "(none)";
+  }
+  if (typeof value === "string") {
+    return value.length > 0 ? value : "(none)";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "(none)";
+    }
+    const preview = value.slice(0, 4).map((entry) => compactValue(entry)).join(", ");
+    return value.length > 4 ? `${preview}, ...` : preview;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 4);
+    if (entries.length === 0) {
+      return "(none)";
+    }
+    const preview = entries.map(([key, entry]) => `${key}=${compactValue(entry)}`).join(", ");
+    return Object.keys(value as Record<string, unknown>).length > 4
+      ? `${preview}, ...`
+      : preview;
+  }
+  return String(value);
+}
+
+function summarizeReasonFromEvent(event: EventRecord): string {
+  const details = event.details ?? {};
+  const rationale = details["selection_rationale"];
+  if (typeof rationale === "string" && rationale.length > 0) {
+    return rationale;
+  }
+
+  const whyChain = asStringList(details["why_chain"]);
+  if (whyChain.length > 0) {
+    return whyChain.slice(0, 3).join(" -> ");
+  }
+
+  const chosenAction = details["chosen_action"];
+  if (typeof chosenAction === "string" && chosenAction.length > 0) {
+    return chosenAction;
+  }
+
+  return "No structured rationale on this event.";
+}
+
 export function App() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [runId, setRunId] = useState("run_demo");
@@ -414,6 +540,7 @@ export function App() {
 
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<EventRecord[]>([]);
+  const [liveEvents, setLiveEvents] = useState<EventRecord[]>([]);
   const [eventDetail, setEventDetail] = useState<EventDetailData | null>(null);
   const [traceNodes, setTraceNodes] = useState<TraceNode[]>([]);
   const [commandAudit, setCommandAudit] = useState<CommandRecord[]>([]);
@@ -453,6 +580,11 @@ export function App() {
     "idle"
   );
   const [streamMessages, setStreamMessages] = useState<StreamMessage[]>([]);
+  const [autoFollowLive, setAutoFollowLive] = useState(true);
+  const [autoRefreshInspector, setAutoRefreshInspector] = useState(true);
+  const [liveEventFilter, setLiveEventFilter] = useState("");
+  const [liveActorFilter, setLiveActorFilter] = useState("");
+  const pollingInFlightRef = useRef(false);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -470,14 +602,316 @@ export function App() {
       counts.set(node.id, 0);
     }
 
-    for (const event of timelineEvents) {
+    for (const event of liveEvents.length > 0 ? liveEvents : timelineEvents) {
       if (counts.has(event.location_id)) {
         counts.set(event.location_id, (counts.get(event.location_id) ?? 0) + 1);
       }
     }
 
     return counts;
-  }, [timelineEvents]);
+  }, [liveEvents, timelineEvents]);
+
+  const eventDataset = useMemo(
+    () => (liveEvents.length > 0 ? liveEvents : timelineEvents),
+    [liveEvents, timelineEvents]
+  );
+
+  const liveTick = status?.current_tick ?? eventDataset[eventDataset.length - 1]?.tick ?? 0;
+
+  const liveWindowEvents = useMemo(() => {
+    const fromTick = Math.max(1, liveTick - 24);
+    const eventFilter = liveEventFilter.trim().toLowerCase();
+    const actorFilter = liveActorFilter.trim().toLowerCase();
+
+    return eventDataset
+      .filter((event) => event.tick >= fromTick)
+      .filter((event) => {
+        if (eventFilter.length > 0 && !event.event_type.includes(eventFilter)) {
+          return false;
+        }
+        if (actorFilter.length === 0) {
+          return true;
+        }
+        return event.actors.some((actor) => actor.actor_id.toLowerCase().includes(actorFilter));
+      })
+      .slice(-400);
+  }, [eventDataset, liveActorFilter, liveEventFilter, liveTick]);
+
+  const livePulse = useMemo(() => {
+    let npcActions = 0;
+    let conflicts = 0;
+    let thefts = 0;
+    let arrests = 0;
+    let conversations = 0;
+    let romance = 0;
+    let observations = 0;
+
+    for (const event of liveWindowEvents) {
+      if (event.event_type === "npc_action_committed") {
+        npcActions += 1;
+      }
+      if (
+        event.event_type === "insult_exchanged" ||
+        event.event_type === "punch_thrown" ||
+        event.event_type === "brawl_started"
+      ) {
+        conflicts += 1;
+      }
+      if (event.event_type === "theft_committed") {
+        thefts += 1;
+      }
+      if (event.event_type === "arrest_made") {
+        arrests += 1;
+      }
+      if (event.event_type === "conversation_held") {
+        conversations += 1;
+      }
+      if (event.event_type === "romance_advanced") {
+        romance += 1;
+      }
+      if (event.event_type === "observation_logged") {
+        observations += 1;
+      }
+    }
+
+    return {
+      windowFromTick: Math.max(1, liveTick - 24),
+      npcActions,
+      conflicts,
+      thefts,
+      arrests,
+      conversations,
+      romance,
+      observations
+    };
+  }, [liveTick, liveWindowEvents]);
+
+  const npcActivityRows = useMemo(() => {
+    const rows = new Map<
+      string,
+      {
+        npcId: string;
+        locationId: string;
+        lastTick: number;
+        lastEventType: string;
+        lastAction: string;
+        topIntents: string[];
+        topPressures: string[];
+        eventCount: number;
+      }
+    >();
+
+    for (const event of [...eventDataset].reverse()) {
+      const actor = event.actors.find(
+        (entry) => entry.actor_kind === "npc" && entry.actor_id.startsWith("npc_")
+      );
+      if (!actor) {
+        continue;
+      }
+
+      const details = event.details ?? {};
+      const existing = rows.get(actor.actor_id);
+      const chosenAction =
+        typeof details["chosen_action"] === "string" ? String(details["chosen_action"]) : "";
+      const topIntents = Array.isArray(details["top_intents"])
+        ? details["top_intents"].filter((value): value is string => typeof value === "string")
+        : [];
+      const topPressures = Array.isArray(details["top_pressures"])
+        ? details["top_pressures"].filter((value): value is string => typeof value === "string")
+        : [];
+
+      if (!existing) {
+        rows.set(actor.actor_id, {
+          npcId: actor.actor_id,
+          locationId: event.location_id,
+          lastTick: event.tick,
+          lastEventType: event.event_type,
+          lastAction: chosenAction,
+          topIntents,
+          topPressures,
+          eventCount: 1
+        });
+      } else {
+        existing.eventCount += 1;
+        if (event.tick > existing.lastTick) {
+          existing.lastTick = event.tick;
+          existing.lastEventType = event.event_type;
+          existing.locationId = event.location_id;
+          if (chosenAction.length > 0) {
+            existing.lastAction = chosenAction;
+          }
+          if (topIntents.length > 0) {
+            existing.topIntents = topIntents;
+          }
+          if (topPressures.length > 0) {
+            existing.topPressures = topPressures;
+          }
+        }
+      }
+    }
+
+    return Array.from(rows.values())
+      .sort((left, right) => right.lastTick - left.lastTick)
+      .slice(0, 60);
+  }, [eventDataset]);
+
+  const npcInspectorOverview = useMemo(() => {
+    if (!npcInspector) {
+      return [];
+    }
+
+    const household = asRecord(npcInspector.household_status);
+    const ledger = asRecord(npcInspector.npc_ledger);
+    const budget = asRecord(npcInspector.time_budget);
+    const contractCount = npcInspector.contract_status?.length ?? 0;
+
+    return [
+      {
+        label: "Profession",
+        value: compactValue(
+          ledger?.["profession"] ?? ledger?.["job"] ?? household?.["profession"] ?? "unknown"
+        )
+      },
+      {
+        label: "Wallet",
+        value: compactValue(ledger?.["wallet"] ?? ledger?.["coin"] ?? ledger?.["money"])
+      },
+      {
+        label: "Debt",
+        value: compactValue(ledger?.["debt"] ?? ledger?.["debt_total"] ?? household?.["debt"])
+      },
+      {
+        label: "Food Buffer",
+        value: compactValue(
+          household?.["food_days"] ?? household?.["food_buffer_days"] ?? ledger?.["food_days"]
+        )
+      },
+      {
+        label: "Shelter",
+        value: compactValue(household?.["shelter_status"] ?? household?.["housing"])
+      },
+      {
+        label: "Dependents",
+        value: compactValue(household?.["dependents"] ?? household?.["household_size"])
+      },
+      {
+        label: "Work Hours",
+        value: compactValue(
+          budget?.["work_hours"] ?? budget?.["work_allocated_hours"] ?? budget?.["hours_work"]
+        )
+      },
+      {
+        label: "Contracts",
+        value: contractCount > 0 ? `${contractCount} active/known` : "(none)"
+      }
+    ];
+  }, [npcInspector]);
+
+  const npcInspectorActionTimeline = useMemo(() => {
+    if (!npcInspector) {
+      return [];
+    }
+
+    return npcInspector.recent_actions.slice(0, 25).map((event) => {
+      const details = event.details ?? {};
+      const whyChain = asStringList(details["why_chain"]);
+      const topIntents = asStringList(details["top_intents"]);
+
+      return {
+        event,
+        action:
+          typeof details["chosen_action"] === "string"
+            ? (details["chosen_action"] as string)
+            : eventPrimaryTopic(event),
+        rationale: summarizeReasonFromEvent(event),
+        whyChain,
+        topIntents
+      };
+    });
+  }, [npcInspector]);
+
+  const settlementOverview = useMemo(() => {
+    if (!settlementInspector) {
+      return [];
+    }
+
+    const labor = asRecord(settlementInspector.labor_market);
+    const stock = asRecord(settlementInspector.stock_ledger);
+    const institution = asRecord(settlementInspector.institution_profile);
+    const market = asRecord(settlementInspector.market_clearing);
+    const queue = asRecord(settlementInspector.institution_queue);
+
+    return [
+      {
+        label: "Unemployment",
+        value: compactValue(
+          labor?.["unemployment_rate"] ?? labor?.["unemployment"] ?? labor?.["jobless_share"]
+        )
+      },
+      {
+        label: "Vacancies",
+        value: compactValue(labor?.["vacancies"] ?? labor?.["open_positions"])
+      },
+      {
+        label: "Food Stock",
+        value: compactValue(stock?.["food"] ?? stock?.["food_stock"] ?? stock?.["grain"])
+      },
+      {
+        label: "Spoilage",
+        value: compactValue(stock?.["spoilage"] ?? stock?.["spoilage_rate"])
+      },
+      {
+        label: "Case Backlog",
+        value: compactValue(
+          queue?.["backlog"] ?? queue?.["pending_cases"] ?? institution?.["pending_cases"]
+        )
+      },
+      {
+        label: "Response Delay",
+        value: compactValue(
+          institution?.["response_latency"] ??
+            institution?.["response_delay_ticks"] ??
+            queue?.["avg_latency_ticks"]
+        )
+      },
+      {
+        label: "Corruption",
+        value: compactValue(
+          institution?.["corruption"] ?? institution?.["corruption_level"] ?? "(unknown)"
+        )
+      },
+      {
+        label: "Market Status",
+        value: compactValue(
+          market?.["status"] ?? market?.["clearing_state"] ?? market?.["price_pressure"]
+        )
+      }
+    ];
+  }, [settlementInspector]);
+
+  const traceChain = useMemo(() => {
+    const sorted = [...traceNodes].sort((left, right) => {
+      if (left.depth !== right.depth) {
+        return right.depth - left.depth;
+      }
+      if (left.event.tick !== right.event.tick) {
+        return left.event.tick - right.event.tick;
+      }
+      return left.event.sequence_in_tick - right.event.sequence_in_tick;
+    });
+
+    if (sorted.length === 0 && eventDetail) {
+      return [
+        {
+          depth: 0,
+          event: eventDetail.event,
+          reason_packet: eventDetail.reason_packet
+        }
+      ];
+    }
+
+    return sorted;
+  }, [eventDetail, traceNodes]);
 
   const withAction = useCallback(async (action: () => Promise<void>) => {
     setBusy(true);
@@ -527,6 +961,7 @@ export function App() {
     );
 
     setTimelineEvents(response.data.events);
+    setLiveEvents((current) => mergeEventsById(current, response.data.events));
   }, [
     activeRunId,
     apiBase,
@@ -576,16 +1011,23 @@ export function App() {
     [activeRunId, apiBase]
   );
 
-  const fetchNpcInspector = useCallback(async () => {
-    const response = await requestJson<QueryResponse<NpcInspectorData>>(
-      apiBase,
-      `/api/v1/runs/${encodeURIComponent(activeRunId)}/npc/${encodeURIComponent(
-        npcInspectorId.trim()
-      )}`
-    );
+  const fetchNpcInspectorById = useCallback(
+    async (npcId: string) => {
+      const response = await requestJson<QueryResponse<NpcInspectorData>>(
+        apiBase,
+        `/api/v1/runs/${encodeURIComponent(activeRunId)}/npc/${encodeURIComponent(
+          npcId.trim()
+        )}`
+      );
 
-    setNpcInspector(response.data);
-  }, [activeRunId, apiBase, npcInspectorId]);
+      setNpcInspector(response.data);
+    },
+    [activeRunId, apiBase]
+  );
+
+  const fetchNpcInspector = useCallback(async () => {
+    await fetchNpcInspectorById(npcInspectorId);
+  }, [fetchNpcInspectorById, npcInspectorId]);
 
   const fetchSettlementInspector = useCallback(async () => {
     const response = await requestJson<QueryResponse<SettlementInspectorData>>(
@@ -721,22 +1163,27 @@ export function App() {
       seed,
       duration_days: durationDays,
       region_id: regionId,
-      snapshot_every_ticks: snapshotEveryTicks
+      snapshot_every_ticks: snapshotEveryTicks,
+      npc_count_min: 60,
+      npc_count_max: 90
     };
 
     const response = await postJson<CreateRunResponse>(apiBase, "/api/v1/runs", {
       config,
-      auto_start: false
+      auto_start: false,
+      replace_existing: true
     });
 
     setStatus(response.status);
     setTimelineEvents([]);
+    setLiveEvents([]);
     setEventDetail(null);
     setTraceNodes([]);
     setNpcInspector(null);
     setSettlementInspector(null);
     setCommandAudit([]);
     setSnapshots([]);
+    setStreamMessages([]);
     setRunId(response.run_id);
     setTimelineToTick(Math.max(24, response.status.current_tick + 24));
 
@@ -783,7 +1230,7 @@ export function App() {
         { steps: Math.max(1, stepCount) }
       );
       setStatus(response.status);
-      await Promise.all([refreshTimeline(), refreshSnapshots()]);
+      await Promise.all([refreshTimeline(), refreshSnapshots(), refreshCommands()]);
       setInfo(`Committed ${response.committed ?? 0} tick(s).`);
     });
   }, [activeRunId, apiBase, refreshSnapshots, refreshTimeline, stepCount, withAction]);
@@ -798,6 +1245,7 @@ export function App() {
       setStatus(response.status);
       setTimelineToTick(Math.max(timelineToTick, response.status.current_tick));
       await Promise.all([refreshTimeline(), refreshSnapshots()]);
+      await refreshCommands();
       setInfo(`Advanced by ${response.committed ?? 0} tick(s).`);
     });
   }, [
@@ -903,12 +1351,15 @@ export function App() {
         seed: String(seedValue),
         duration_days: durationDays,
         region_id: regionId,
-        snapshot_every_ticks: snapshotEveryTicks
+        snapshot_every_ticks: snapshotEveryTicks,
+        npc_count_min: 60,
+        npc_count_max: 90
       };
 
       await postJson<CreateRunResponse>(apiBase, "/api/v1/runs", {
         config,
-        auto_start: false
+        auto_start: false,
+        replace_existing: true
       });
 
       const comparisonCommand = buildComparisonScenarioCommand(comparisonRunId);
@@ -1009,10 +1460,36 @@ export function App() {
       try {
         const message = JSON.parse(messageEvent.data) as StreamMessage;
 
-        setStreamMessages((current) => [message, ...current].slice(0, 100));
+        setStreamMessages((current) => [message, ...current].slice(0, 250));
 
         if (message.type === "run.status") {
           setStatus(message.payload as RunStatus);
+        } else if (message.type === "event.appended") {
+          const event = message.payload as EventRecord;
+          setLiveEvents((current) => mergeEventsById(current, [event]));
+          if (
+            autoFollowLive &&
+            timelineEventType === "all" &&
+            timelineActorId.trim().length === 0 &&
+            timelineLocationId.trim().length === 0
+          ) {
+            setTimelineEvents((current) => mergeEventsById(current, [event]).slice(-1200));
+          }
+        } else if (message.type === "snapshot.created") {
+          const snapshot = message.payload as Snapshot;
+          setSnapshots((current) =>
+            [...current.filter((entry) => entry.snapshot_id !== snapshot.snapshot_id), snapshot]
+              .sort((left, right) => left.tick - right.tick)
+              .slice(-400)
+          );
+        } else if (message.type === "command.result") {
+          const commandEntry = message.payload as CommandRecord;
+          setCommandAudit((current) => {
+            const without = current.filter(
+              (entry) => entry.command.command_id !== commandEntry.command.command_id
+            );
+            return [commandEntry, ...without].slice(0, 250);
+          });
         }
       } catch {
         // ignore malformed stream frames
@@ -1030,7 +1507,101 @@ export function App() {
     return () => {
       socket.close();
     };
-  }, [apiBase, streamEnabled, streamRunId]);
+  }, [
+    apiBase,
+    autoFollowLive,
+    streamEnabled,
+    streamRunId,
+    timelineActorId,
+    timelineEventType,
+    timelineLocationId
+  ]);
+
+  useEffect(() => {
+    if (!streamEnabled || !streamRunId || streamState === "open") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (pollingInFlightRef.current) {
+        return;
+      }
+
+      pollingInFlightRef.current = true;
+      const normalizedApiBase = apiBase.replace(/\/$/, "");
+      const runPath = encodeURIComponent(streamRunId);
+
+      requestJson<RunControlResponse>(apiBase, `/api/v1/runs/${runPath}/status`)
+        .then((response) => {
+          setStatus(response.status);
+          const toTick = response.status.current_tick;
+          const fromTick = Math.max(1, toTick - 96);
+          return requestJson<QueryResponse<TimelineData>>(
+            apiBase,
+            `/api/v1/runs/${runPath}/timeline?from_tick=${fromTick}&to_tick=${toTick}&page_size=3000`
+          );
+        })
+        .then((timelineResponse) => {
+          setLiveEvents((current) => mergeEventsById(current, timelineResponse.data.events));
+          if (autoFollowLive) {
+            setTimelineEvents(timelineResponse.data.events);
+            setTimelineFromTick(timelineResponse.data.from_tick);
+            setTimelineToTick(timelineResponse.data.to_tick);
+          }
+          setStreamMessages((current) =>
+            [
+              {
+                schema_version: SCHEMA_VERSION,
+                type: "warning",
+                run_id: streamRunId,
+                tick: timelineResponse.generated_at_tick,
+                sequence_in_tick: null,
+                reconnect_token: `poll:${timelineResponse.generated_at_tick}`,
+                payload: {
+                  message: `stream fallback polling from ${normalizedApiBase}`
+                }
+              } as StreamMessage,
+              ...current
+            ].slice(0, 250)
+          );
+        })
+        .catch(() => {
+          // silent retry loop while stream is disconnected
+        })
+        .finally(() => {
+          pollingInFlightRef.current = false;
+        });
+    }, 2500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [apiBase, autoFollowLive, streamEnabled, streamRunId, streamState]);
+
+  useEffect(() => {
+    if (!autoRefreshInspector || !streamRunId || !npcInspectorId.trim()) {
+      return;
+    }
+    if (status?.mode !== "running") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void fetchNpcInspector();
+      void fetchSettlementInspector();
+    }, 3500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    autoRefreshInspector,
+    fetchNpcInspector,
+    fetchSettlementInspector,
+    npcInspectorId,
+    status?.mode,
+    streamRunId
+  ]);
 
   return (
     <main className="app-shell">
@@ -1074,6 +1645,171 @@ export function App() {
           {info ? <p className="info">{info}</p> : null}
         </section>
       )}
+
+      <section className="panel live-panel">
+        <div className="live-header">
+          <div>
+            <h2>Live World Monitor</h2>
+            <p className="panel-meta">
+              Real-time feed of world activity, NPC behavior, and causal context.
+            </p>
+          </div>
+          <div className="live-flags">
+            <label className="stream-toggle">
+              <input
+                type="checkbox"
+                checked={autoFollowLive}
+                onChange={(event) => setAutoFollowLive(event.target.checked)}
+              />
+              Auto-follow feed
+            </label>
+            <label className="stream-toggle">
+              <input
+                type="checkbox"
+                checked={autoRefreshInspector}
+                onChange={(event) => setAutoRefreshInspector(event.target.checked)}
+              />
+              Auto-refresh inspector
+            </label>
+          </div>
+        </div>
+
+        <div className="pulse-grid">
+          <article>
+            <h3>Tick window</h3>
+            <p>
+              {livePulse.windowFromTick} - {liveTick}
+            </p>
+          </article>
+          <article>
+            <h3>NPC actions</h3>
+            <p>{livePulse.npcActions}</p>
+          </article>
+          <article>
+            <h3>Conflicts</h3>
+            <p>{livePulse.conflicts}</p>
+          </article>
+          <article>
+            <h3>Thefts / Arrests</h3>
+            <p>
+              {livePulse.thefts} / {livePulse.arrests}
+            </p>
+          </article>
+          <article>
+            <h3>Conversations</h3>
+            <p>{livePulse.conversations}</p>
+          </article>
+          <article>
+            <h3>Romance / Observations</h3>
+            <p>
+              {livePulse.romance} / {livePulse.observations}
+            </p>
+          </article>
+        </div>
+
+        <form
+          className="live-filters"
+          onSubmit={(event) => {
+            event.preventDefault();
+          }}
+        >
+          <label>
+            Event type contains
+            <input
+              placeholder="theft, brawl, romance..."
+              value={liveEventFilter}
+              onChange={(event) => setLiveEventFilter(event.target.value)}
+            />
+          </label>
+          <label>
+            Actor contains
+            <input
+              placeholder="npc_001"
+              value={liveActorFilter}
+              onChange={(event) => setLiveActorFilter(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void onRefreshAll();
+            }}
+          >
+            Sync now
+          </button>
+        </form>
+
+        <div className="live-grid">
+          <article>
+            <h3>Event feed</h3>
+            <p className="panel-meta">{liveWindowEvents.length} event(s) in current live window</p>
+            <div className="live-feed-list">
+              {[...liveWindowEvents]
+                .reverse()
+                .map((event) => (
+                  <button
+                    key={event.event_id}
+                    type="button"
+                    className={`timeline-item ${
+                      eventDetail?.event.event_id === event.event_id ? "selected" : ""
+                    }`}
+                    onClick={() => {
+                      void onSelectEvent(event.event_id);
+                    }}
+                  >
+                    <span>
+                      T{event.tick}:{event.sequence_in_tick}
+                    </span>
+                    <strong>{formatEventType(event.event_type)}</strong>
+                    <em>
+                      {event.location_id} · {eventActorLabel(event)} · {eventPrimaryTopic(event)}
+                    </em>
+                    <small>{summarizeReasonFromEvent(event)}</small>
+                    <span className="meta-inline">
+                      caused-by: {event.caused_by.length} · tags: {event.tags?.length ?? 0}
+                    </span>
+                  </button>
+                ))}
+              {liveWindowEvents.length === 0 ? (
+                <p className="empty-state">No live events in the current window.</p>
+              ) : null}
+            </div>
+          </article>
+
+          <article>
+            <h3>NPC activity board</h3>
+            <p className="panel-meta">
+              Click a row to inspect the NPC and trace why actions happened.
+            </p>
+            <div className="npc-activity-list">
+              {npcActivityRows.map((row) => (
+                <button
+                  key={row.npcId}
+                  type="button"
+                  className={`npc-activity-row ${npcInspectorId === row.npcId ? "selected" : ""}`}
+                  onClick={() => {
+                    setNpcInspectorId(row.npcId);
+                    void withAction(() => fetchNpcInspectorById(row.npcId));
+                  }}
+                >
+                  <strong>{row.npcId}</strong>
+                  <span>T{row.lastTick}</span>
+                  <span>{formatEventType(row.lastEventType)}</span>
+                  <span>{row.lastAction || "(no action)"}</span>
+                  <span>{row.locationId}</span>
+                  <span>{row.topIntents.slice(0, 2).join(", ") || "(no intents)"}</span>
+                  <span>{row.topPressures.slice(0, 2).join(", ") || "(no pressures)"}</span>
+                  <span>{row.eventCount} events</span>
+                </button>
+              ))}
+              {npcActivityRows.length === 0 ? (
+                <p className="empty-state">No NPC activity yet.</p>
+              ) : null}
+            </div>
+          </article>
+        </div>
+      </section>
 
       <section className="panel run-panel">
         <h2>Run Control</h2>
@@ -1627,27 +2363,92 @@ export function App() {
                   <p>
                     <strong>{npcInspector.npc_id}</strong> at {npcInspector.current_location}
                   </p>
-                  <p>Top intents: {npcInspector.top_intents.join(", ") || "(none)"}</p>
-                  <p>
-                    Recent belief updates: {npcInspector.recent_belief_updates.join(", ") || "(none)"}
-                  </p>
-                  <p>Recent actions: {npcInspector.recent_actions.length}</p>
-                  <p>
-                    Motive chain: {npcInspector.motive_chain?.join(" -> ") || "(none)"}
-                  </p>
-                  <p>
-                    Household ledger:{" "}
-                    {npcInspector.npc_ledger
-                      ? JSON.stringify(npcInspector.npc_ledger)
-                      : "(not available)"}
-                  </p>
-                  <p>
-                    Active contracts: {npcInspector.contract_status?.length ?? 0}
-                  </p>
-                  <p>
-                    Relationship edges: {npcInspector.relationship_edges?.length ?? 0}
-                  </p>
-                  <p>Beliefs tracked: {npcInspector.active_beliefs?.length ?? 0}</p>
+                  <div className="inspector-kv-grid">
+                    {npcInspectorOverview.map((entry) => (
+                      <div key={entry.label}>
+                        <dt>{entry.label}</dt>
+                        <dd>{entry.value}</dd>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="inspector-block">
+                    <h4>Intent and motive context</h4>
+                    <p>Top intents: {npcInspector.top_intents.join(", ") || "(none)"}</p>
+                    <p>Motive chain: {npcInspector.motive_chain?.join(" -> ") || "(none)"}</p>
+                    <p>
+                      Belief updates: {npcInspector.recent_belief_updates.join(", ") || "(none)"}
+                    </p>
+                    <p>
+                      Relationships: {npcInspector.relationship_edges?.length ?? 0} · Beliefs:{" "}
+                      {npcInspector.active_beliefs?.length ?? 0} · Opportunities:{" "}
+                      {npcInspector.opportunities?.length ?? 0} · Commitments:{" "}
+                      {npcInspector.commitments?.length ?? 0}
+                    </p>
+                  </div>
+                  {npcInspector.reason_packet ? (
+                    <div className="inspector-block">
+                      <h4>Latest reason packet</h4>
+                      <p>{npcInspector.reason_packet.selection_rationale}</p>
+                      <p>
+                        Why chain: {npcInspector.reason_packet.why_chain?.join(" -> ") || "(none)"}
+                      </p>
+                      <p>
+                        Constraints:{" "}
+                        {npcInspector.reason_packet.context_constraints?.join(", ") || "(none)"}
+                      </p>
+                      <p>
+                        Alternatives:{" "}
+                        {npcInspector.reason_packet.alternatives_considered?.join(", ") || "(none)"}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="empty-state">No reason packet on latest inspected state.</p>
+                  )}
+                  <div className="inspector-block">
+                    <h4>Recent action chain</h4>
+                    <div className="inspector-action-list">
+                      {npcInspectorActionTimeline.map((entry) => (
+                        <button
+                          key={entry.event.event_id}
+                          type="button"
+                          className={`timeline-item ${
+                            eventDetail?.event.event_id === entry.event.event_id ? "selected" : ""
+                          }`}
+                          onClick={() => {
+                            void onSelectEvent(entry.event.event_id);
+                          }}
+                        >
+                          <span>
+                            T{entry.event.tick}:{entry.event.sequence_in_tick}
+                          </span>
+                          <strong>{formatEventType(entry.event.event_type)}</strong>
+                          <em>{entry.action}</em>
+                          <small>{entry.rationale}</small>
+                          <span className="meta-inline">
+                            intents: {entry.topIntents.slice(0, 3).join(", ") || "(none)"} ·
+                            caused-by: {entry.event.caused_by.length}
+                          </span>
+                        </button>
+                      ))}
+                      {npcInspectorActionTimeline.length === 0 ? (
+                        <span className="empty-state">(none)</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="inspector-json-grid">
+                    <div>
+                      <h4>Ledger</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(npcInspector.npc_ledger ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                    <div>
+                      <h4>Time budget</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(npcInspector.time_budget ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
                   <p>Why summaries: {npcInspector.why_summaries?.length ?? 0}</p>
                 </>
               ) : (
@@ -1665,27 +2466,103 @@ export function App() {
                   <p>Food: {settlementInspector.food_status}</p>
                   <p>Security: {settlementInspector.security_status}</p>
                   <p>Institution: {settlementInspector.institutional_health}</p>
-                  <p>
-                    Labor market:{" "}
-                    {settlementInspector.labor_market
-                      ? JSON.stringify(settlementInspector.labor_market)
-                      : "(not available)"}
-                  </p>
-                  <p>
-                    Stock ledger:{" "}
-                    {settlementInspector.stock_ledger
-                      ? JSON.stringify(settlementInspector.stock_ledger)
-                      : "(not available)"}
-                  </p>
-                  <p>
-                    Institution profile:{" "}
-                    {settlementInspector.institution_profile
-                      ? JSON.stringify(settlementInspector.institution_profile)
-                      : "(not available)"}
-                  </p>
+                  <div className="inspector-kv-grid">
+                    {settlementOverview.map((entry) => (
+                      <div key={entry.label}>
+                        <dt>{entry.label}</dt>
+                        <dd>{entry.value}</dd>
+                      </div>
+                    ))}
+                  </div>
                   <p>Production nodes: {settlementInspector.production_nodes?.length ?? 0}</p>
                   <p>Groups: {settlementInspector.groups?.length ?? 0}</p>
                   <p>Routes: {settlementInspector.routes?.length ?? 0}</p>
+                  <div className="inspector-block">
+                    <h4>Pressure readouts</h4>
+                    <div className="inspector-chip-list">
+                      {Object.entries(settlementInspector.pressure_readouts).map(([key, value]) => (
+                        <span key={key} className="chip-link">
+                          {key}: {value.toFixed(2)}
+                        </span>
+                      ))}
+                      {Object.keys(settlementInspector.pressure_readouts).length === 0 ? (
+                        <span className="empty-state">(none)</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="inspector-block">
+                    <h4>Notable events</h4>
+                    <div className="inspector-action-list">
+                      {settlementInspector.notable_events.slice(0, 20).map((event) => (
+                        <button
+                          key={event.event_id}
+                          type="button"
+                          className={`timeline-item ${
+                            eventDetail?.event.event_id === event.event_id ? "selected" : ""
+                          }`}
+                          onClick={() => {
+                            void onSelectEvent(event.event_id);
+                          }}
+                        >
+                          <span>
+                            T{event.tick}:{event.sequence_in_tick}
+                          </span>
+                          <strong>{formatEventType(event.event_type)}</strong>
+                          <em>{event.location_id}</em>
+                          <small>{summarizeReasonFromEvent(event)}</small>
+                        </button>
+                      ))}
+                      {settlementInspector.notable_events.length === 0 ? (
+                        <span className="empty-state">(none)</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="inspector-json-grid">
+                    <div>
+                      <h4>Labor market</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(settlementInspector.labor_market ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                    <div>
+                      <h4>Stock + market</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(
+                          {
+                            stock_ledger: settlementInspector.stock_ledger ?? {},
+                            market_clearing: settlementInspector.market_clearing ?? {}
+                          },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+                  </div>
+                  <div className="inspector-json-grid">
+                    <div>
+                      <h4>Institution profile</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(settlementInspector.institution_profile ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                    <div>
+                      <h4>Institution queue + accounting</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(
+                          {
+                            institution_queue: settlementInspector.institution_queue ?? {},
+                            accounting_transfers:
+                              settlementInspector.accounting_transfers?.slice(0, 20) ?? []
+                          },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+                  </div>
+                  <p>
+                    Accounting transfers: {settlementInspector.accounting_transfers?.length ?? 0}
+                  </p>
                 </>
               ) : (
                 <p className="empty-state">No settlement loaded.</p>
@@ -1706,6 +2583,13 @@ export function App() {
                 Tick {eventDetail.event.tick} · {formatEventType(eventDetail.event.event_type)}
               </p>
               <p>Location: {eventDetail.event.location_id}</p>
+              <p>Actor: {eventActorLabel(eventDetail.event)}</p>
+              <p>
+                Triggered by:{" "}
+                {eventDetail.event.caused_by.length > 0
+                  ? eventDetail.event.caused_by.join(", ")
+                  : "(root event)"}
+              </p>
               {eventDetail.reason_packet ? (
                 <>
                   <p>Why: {eventDetail.reason_packet.selection_rationale}</p>
@@ -1722,15 +2606,16 @@ export function App() {
                   </p>
                 </>
               ) : (
-                <p>Why: (system/no reason packet)</p>
+                <p>Why: {summarizeReasonFromEvent(eventDetail.event)}</p>
               )}
+              <p>Details: {compactValue(eventDetail.event.details)}</p>
             </div>
           ) : (
             <p className="empty-state">Select a timeline event to open trace details.</p>
           )}
 
           <div className="trace-list">
-            {traceNodes.map((node) => (
+            {traceChain.map((node) => (
               <article
                 key={`${node.event.event_id}_${node.depth}`}
                 className="trace-node"
@@ -1741,16 +2626,32 @@ export function App() {
                   {node.event.sequence_in_tick}
                 </p>
                 <p>{formatEventType(node.event.event_type)}</p>
+                <p>{node.event.location_id}</p>
+                <p>
+                  Actor: {eventActorLabel(node.event)} · caused-by:{" "}
+                  {node.event.caused_by.length > 0 ? node.event.caused_by.join(", ") : "(none)"}
+                </p>
                 {node.reason_packet ? (
                   <>
                     <p>{node.reason_packet.selection_rationale}</p>
-                    <p>{node.reason_packet.why_chain?.join(" -> ")}</p>
+                    <p>Why chain: {node.reason_packet.why_chain?.join(" -> ") || "(none)"}</p>
+                    <p>
+                      Constraints:{" "}
+                      {node.reason_packet.context_constraints?.join(", ") || "(none)"}
+                    </p>
+                    <p>
+                      Alternatives:{" "}
+                      {node.reason_packet.alternatives_considered?.slice(0, 4).join(", ") ||
+                        "(none)"}
+                    </p>
                   </>
-                ) : null}
+                ) : (
+                  <p>Why: {summarizeReasonFromEvent(node.event)}</p>
+                )}
               </article>
             ))}
 
-            {traceNodes.length === 0 && eventDetail && (
+            {traceChain.length === 0 && eventDetail && (
               <p className="empty-state">No linked parents found for this event.</p>
             )}
           </div>

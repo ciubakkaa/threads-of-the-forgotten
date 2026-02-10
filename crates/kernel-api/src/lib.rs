@@ -52,8 +52,42 @@ impl EngineApi {
             persisted_reason_count: 0,
             last_snapshot_tick: None,
         });
+        Ok(())
+    }
 
-        self.flush_persistence_checked()
+    pub fn initialize_run_storage(
+        &mut self,
+        replace_existing_run: bool,
+    ) -> Result<(), PersistenceError> {
+        let Some(state) = self.persistence.as_mut() else {
+            return Err(PersistenceError::NotAttached);
+        };
+
+        let run_id = self.kernel.run_id().to_string();
+        if state.store.run_exists(&run_id)? {
+            if replace_existing_run {
+                state.store.delete_run(&run_id)?;
+                state.persisted_command_count = 0;
+                state.persisted_event_count = 0;
+                state.persisted_reason_count = 0;
+                state.last_snapshot_tick = None;
+            } else {
+                return Err(PersistenceError::RunAlreadyExists(run_id));
+            }
+        }
+
+        let bootstrap_snapshot = self.kernel.snapshot_for_current_tick();
+        state.store.persist_delta(
+            self.kernel.config(),
+            self.kernel.status(),
+            &[],
+            &[],
+            &[],
+            Some(&bootstrap_snapshot),
+        )?;
+        state.last_snapshot_tick = Some(bootstrap_snapshot.tick);
+        self.last_persistence_error = None;
+        Ok(())
     }
 
     pub fn flush_persistence_checked(&mut self) -> Result<(), PersistenceError> {
@@ -67,8 +101,9 @@ impl EngineApi {
 
         let current_tick = self.kernel.status().current_tick;
         let cadence = self.kernel.config().snapshot_every_ticks.max(1);
-        let snapshot_due = current_tick > 0
-            && ((current_tick % cadence == 0) || self.kernel.status().is_complete())
+        let snapshot_due = ((current_tick == 0 && state.last_snapshot_tick.is_none())
+            || (current_tick > 0
+                && ((current_tick % cadence == 0) || self.kernel.status().is_complete())))
             && state.last_snapshot_tick != Some(current_tick);
 
         let snapshot = if snapshot_due {
@@ -336,6 +371,13 @@ fn command_type_matches_payload(command_type: CommandType, payload: &CommandPayl
 mod tests {
     use super::*;
 
+    fn test_config() -> RunConfig {
+        let mut config = RunConfig::default();
+        config.npc_count_min = 3;
+        config.npc_count_max = 3;
+        config
+    }
+
     fn temp_db_path(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -347,7 +389,7 @@ mod tests {
 
     #[test]
     fn step_returns_committed_count() {
-        let mut api = EngineApi::from_config(RunConfig::default());
+        let mut api = EngineApi::from_config(test_config());
         let (_, committed) = api.step(3);
 
         assert_eq!(committed, 3);
@@ -356,7 +398,7 @@ mod tests {
 
     #[test]
     fn rejects_mismatched_payload_type() {
-        let api_config = RunConfig::default();
+        let api_config = test_config();
         let mut api = EngineApi::from_config(api_config.clone());
 
         let bad = Command::new(
@@ -376,7 +418,7 @@ mod tests {
 
     #[test]
     fn accepts_and_applies_valid_injection_command() {
-        let api_config = RunConfig::default();
+        let api_config = test_config();
         let mut api = EngineApi::from_config(api_config.clone());
 
         let command = Command::new(
@@ -402,7 +444,7 @@ mod tests {
 
     #[test]
     fn persists_and_replays_by_tick() {
-        let mut config = RunConfig::default();
+        let mut config = test_config();
         config.snapshot_every_ticks = 4;
         let run_id = config.run_id.clone();
 
