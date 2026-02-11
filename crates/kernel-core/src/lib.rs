@@ -1,5 +1,18 @@
 //! Deterministic phase executor and command queue with minimal NPC intent/action commits.
 
+pub mod agent;
+pub mod drive;
+pub mod economy;
+pub mod institution;
+pub mod memory;
+pub mod operator;
+pub mod perception;
+pub mod planner;
+pub mod scheduler;
+pub mod social;
+pub mod spatial;
+pub mod world;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

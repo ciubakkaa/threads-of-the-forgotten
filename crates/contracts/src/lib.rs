@@ -6,6 +6,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod agency;
+
 pub const SCHEMA_VERSION_V1: &str = "1.0";
 pub const TICKS_PER_DAY: u64 = 24;
 
@@ -39,6 +41,9 @@ pub struct RunConfig {
     #[serde(default)]
     pub scenario_flags: BTreeMap<String, bool>,
     pub notes: Option<String>,
+    /// Agency system configuration (planner, scheduler, social, economy).
+    #[serde(default)]
+    pub agency: agency::AgencyRunConfig,
 }
 
 impl RunConfig {
@@ -67,6 +72,7 @@ impl Default for RunConfig {
             enabled_systems: BTreeMap::new(),
             scenario_flags: BTreeMap::new(),
             notes: None,
+            agency: agency::AgencyRunConfig::default(),
         }
     }
 }
@@ -1000,6 +1006,23 @@ pub enum EventType {
     MarketFailed,
     AccountingTransferRecorded,
     InstitutionQueueUpdated,
+    // --- Agency system event types ---
+    AgentWake,
+    AgentIdle,
+    PlanCreated,
+    PlanStepStarted,
+    PlanStepCompleted,
+    PlanInterrupted,
+    PlanAbandoned,
+    ConflictDetected,
+    ConflictResolved,
+    DriveThresholdCrossed,
+    AspirationChanged,
+    BeliefReconciled,
+    RumorPropagated,
+    RumorDistorted,
+    InstitutionQueueFull,
+    InstitutionCorruptionEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
