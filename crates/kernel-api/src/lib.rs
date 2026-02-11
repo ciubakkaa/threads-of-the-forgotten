@@ -11,7 +11,7 @@ use contracts::{
 };
 use kernel_core::Kernel;
 use persistence::SqliteRunStore;
-pub use persistence::{PersistedCommandEntry, PersistenceError, ReplaySlice};
+pub use persistence::{PersistedCommandEntry, PersistedRunSummary, PersistenceError, ReplaySlice};
 pub use server::{serve, ServerError};
 
 #[derive(Debug)]

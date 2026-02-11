@@ -72,11 +72,11 @@ impl Default for RunConfig {
 }
 
 fn default_npc_count_min() -> u16 {
-    60
+    5
 }
 
 fn default_npc_count_max() -> u16 {
-    90
+    10
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -605,6 +605,286 @@ pub struct TimeBudgetState {
     pub free_hours: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NpcOccupancyKind {
+    Idle,
+    Resting,
+    Loitering,
+    Traveling,
+    ExecutingPlanStep,
+    Recovering,
+    SocialPresence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpcDriveState {
+    pub npc_id: String,
+    pub tick: u64,
+    pub need_food: i64,
+    pub need_shelter: i64,
+    pub need_income: i64,
+    pub need_safety: i64,
+    pub need_belonging: i64,
+    pub need_status: i64,
+    pub need_recovery: i64,
+    pub stress: i64,
+    #[serde(default)]
+    pub active_obligations: Vec<String>,
+    #[serde(default)]
+    pub active_aspirations: Vec<String>,
+    #[serde(default)]
+    pub moral_bounds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpcOccupancyState {
+    pub npc_id: String,
+    pub tick: u64,
+    pub occupancy: NpcOccupancyKind,
+    pub state_tag: String,
+    pub until_tick: u64,
+    pub interruptible: bool,
+    pub location_id: String,
+    pub active_plan_id: Option<String>,
+    pub active_operator_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorDefinition {
+    pub operator_id: String,
+    pub family: String,
+    pub action: String,
+    pub duration_ticks: u64,
+    pub risk: i64,
+    pub visibility: i64,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
+    #[serde(default)]
+    pub effects: Vec<String>,
+    #[serde(default)]
+    pub resource_delta: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanCandidateState {
+    pub plan_id: String,
+    pub npc_id: String,
+    pub tick: u64,
+    pub goal_id: String,
+    pub action: String,
+    pub utility_score: i64,
+    pub risk_score: i64,
+    pub temporal_fit: i64,
+    #[serde(default)]
+    pub operator_chain_ids: Vec<String>,
+    #[serde(default)]
+    pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionExecutionState {
+    pub execution_id: String,
+    pub npc_id: String,
+    pub tick: u64,
+    pub plan_id: String,
+    pub goal_id: String,
+    pub action: String,
+    pub active_step_index: usize,
+    pub remaining_ticks: u64,
+    pub interruption_policy: String,
+    #[serde(default)]
+    pub operator_chain_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorldFactDelta {
+    pub fact_key: String,
+    pub delta: i64,
+    pub from_value: i64,
+    pub to_value: i64,
+    pub location_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventSynthesisTrace {
+    pub trace_id: String,
+    pub tick: u64,
+    pub run_id: String,
+    pub source_plan_id: String,
+    pub source_operator_id: String,
+    pub source_event_id: String,
+    pub event_type: EventType,
+    #[serde(default)]
+    pub trigger_facts: Vec<String>,
+    #[serde(default)]
+    pub rejected_alternatives: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AtomicOpKind {
+    Perceive,
+    Observe,
+    Stealth,
+    Approach,
+    Greet,
+    Converse,
+    AskQuestion,
+    ShareInfo,
+    ShareRumor,
+    Compliment,
+    Flirt,
+    GiftOffer,
+    Promise,
+    Negotiate,
+    AgreeTerms,
+    Disagree,
+    Apologize,
+    Insult,
+    Threaten,
+    Challenge,
+    Strike,
+    Defend,
+    Flee,
+    CallGuards,
+    ReportIncident,
+    Arrest,
+    Buy,
+    Sell,
+    Barter,
+    LendCoin,
+    BorrowCoin,
+    PayRent,
+    ReceiveWage,
+    WorkShift,
+    Craft,
+    Farm,
+    Forage,
+    Eat,
+    Drink,
+    Rest,
+    SeekShelter,
+    SeekTreatment,
+    Travel,
+    Escort,
+    Patrol,
+    Mediate,
+    InviteToGroup,
+    JoinGroup,
+    LeaveGroup,
+    Marry,
+    Breakup,
+    CareForChild,
+    Train,
+    Teach,
+    TradeVisit,
+    Celebrate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AtomicOp {
+    pub kind: AtomicOpKind,
+    pub target_id: Option<String>,
+    pub item_kind: Option<String>,
+    pub location_id: Option<String>,
+    pub tone: Option<String>,
+    pub intensity: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionTemplateDefinition {
+    pub template_id: String,
+    pub base_action: String,
+    pub goal_family: String,
+    pub op_sequence: Vec<AtomicOpKind>,
+    pub required_capability: Option<String>,
+    #[serde(default)]
+    pub optional_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpcComposablePlanState {
+    pub npc_id: String,
+    pub tick: u64,
+    pub goal_family: String,
+    pub template_id: String,
+    pub base_action: String,
+    pub composed_action: String,
+    pub ops: Vec<AtomicOp>,
+    #[serde(default)]
+    pub rejected_alternatives: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessKind {
+    Romance,
+    BusinessPartnership,
+    ConflictSpiral,
+    HouseholdFormation,
+    Apprenticeship,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessStatus {
+    Active,
+    Dormant,
+    Resolved,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessInstanceState {
+    pub process_id: String,
+    pub kind: ProcessKind,
+    pub status: ProcessStatus,
+    pub stage: String,
+    pub participants: Vec<String>,
+    pub started_tick: u64,
+    pub last_updated_tick: u64,
+    pub last_event_id: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NpcCapabilityProfile {
+    pub npc_id: String,
+    pub physical: i64,
+    pub social: i64,
+    pub trade: i64,
+    pub combat: i64,
+    pub literacy: i64,
+    pub influence: i64,
+    pub stealth: i64,
+    pub care: i64,
+    pub law: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PerceptionRecord {
+    pub observer_npc_id: String,
+    pub tick: u64,
+    pub location_id: String,
+    pub observed_event_id: String,
+    pub confidence: i64,
+    pub bias: i64,
+    pub topic: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryRecord {
+    pub npc_id: String,
+    pub memory_id: String,
+    pub tick: u64,
+    pub topic: String,
+    pub salience: i64,
+    pub valence: i64,
+    pub source_npc_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketClearingState {
     pub settlement_id: String,
@@ -768,6 +1048,14 @@ pub struct ReasonPacket {
     pub why_chain: Vec<String>,
     #[serde(default)]
     pub expected_consequences: Vec<String>,
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    #[serde(default)]
+    pub operator_chain_ids: Vec<String>,
+    #[serde(default)]
+    pub blocked_plan_ids: Vec<String>,
     pub selection_rationale: String,
 }
 

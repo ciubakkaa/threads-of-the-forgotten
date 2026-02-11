@@ -32,6 +32,7 @@ const HORIZON_360D_MAX_PER_NPC_DOMINANT_SHARE: f64 = 0.72;
 const MAX_BASELINE_THEFT_SHARE_90D: f64 = 0.01;
 const MIN_STRESS_RUNS_WITH_THEFT_90D: usize = 2;
 const MAX_STRESS_THEFT_SHARE_90D: f64 = 0.10;
+const MAX_NON_COMMIT_SHARE: f64 = 0.90;
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
@@ -876,6 +877,22 @@ fn assert_reason_envelope_completeness(artifact: &RunArtifact) {
         artifact.scenario.as_str(),
         artifact.seed
     );
+    assert!(
+        packets.iter().all(|packet| packet
+            .goal_id
+            .as_ref()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+            && packet
+                .plan_id
+                .as_ref()
+                .map(|value| !value.is_empty())
+                .unwrap_or(false)
+            && !packet.operator_chain_ids.is_empty()),
+        "reason envelope gate failed: scenario={} seed={} missing goal/plan/operator linkage",
+        artifact.scenario.as_str(),
+        artifact.seed
+    );
 }
 
 fn assert_trust_and_belief_signals(artifact: &RunArtifact) {
@@ -1013,6 +1030,28 @@ fn assert_cadence_realism(artifact: &RunArtifact) {
             }
         }
     }
+
+    let npc_count = snapshot_npc_count(artifact.snapshots.as_slice()).max(1);
+    let max_possible_commits = artifact.config.max_ticks() as usize * npc_count;
+    let commit_count = count_actions(artifact.events.as_slice());
+    let non_commit_share = if max_possible_commits == 0 {
+        0.0
+    } else {
+        1.0 - (commit_count as f64 / max_possible_commits as f64)
+    };
+    let min_non_commit_share = match artifact.scenario {
+        Scenario::BadHarvest | Scenario::WinterHardening => 0.01,
+        _ => 0.04,
+    };
+    assert!(
+        non_commit_share >= min_non_commit_share && non_commit_share <= MAX_NON_COMMIT_SHARE,
+        "cadence gate failed (non-commit share): scenario={} seed={} non_commit_share={:.3} bounds={:.2}..{:.2}",
+        artifact.scenario.as_str(),
+        artifact.seed,
+        non_commit_share,
+        min_non_commit_share,
+        MAX_NON_COMMIT_SHARE
+    );
 }
 
 fn assert_accounting_and_commitment_signals(artifact: &RunArtifact) {
@@ -1343,6 +1382,19 @@ fn max_household_eviction_risk(snapshots: &[Snapshot]) -> i64 {
         .filter_map(|household| household.get("eviction_risk_score").and_then(Value::as_i64))
         .max()
         .unwrap_or_default()
+}
+
+fn snapshot_npc_count(snapshots: &[Snapshot]) -> usize {
+    snapshots
+        .iter()
+        .find_map(|snapshot| {
+            snapshot
+                .region_state
+                .get("npc_profiles")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        })
+        .unwrap_or(0)
 }
 
 #[derive(Debug)]

@@ -3,6 +3,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 const DEFAULT_API_BASE =
   (import.meta as ImportMeta & { env?: { VITE_API_BASE?: string } }).env?.
     VITE_API_BASE ?? "http://127.0.0.1:8080";
+const DEFAULT_NPC_COUNT_MIN = 5;
+const DEFAULT_NPC_COUNT_MAX = 10;
 
 const REGION_OPTIONS = [
   "crownvale",
@@ -122,6 +124,22 @@ interface CreateRunResponse {
   started: boolean;
 }
 
+interface RunHistoryEntry {
+  run_id: string;
+  seed: string;
+  region_id: string;
+  duration_days: number;
+  snapshot_every_ticks: number;
+  updated_at: string;
+  status: RunStatus;
+}
+
+interface RunHistoryResponse {
+  schema_version: string;
+  active_run_id: string | null;
+  runs: RunHistoryEntry[];
+}
+
 interface RunControlResponse {
   schema_version: string;
   run_id: string;
@@ -168,6 +186,10 @@ interface ReasonPacket {
   context_constraints?: string[];
   why_chain?: string[];
   expected_consequences?: string[];
+  goal_id?: string | null;
+  plan_id?: string | null;
+  operator_chain_ids?: string[];
+  blocked_plan_ids?: string[];
   selection_rationale: string;
 }
 
@@ -221,7 +243,12 @@ interface NpcInspectorData {
   active_beliefs?: Array<Record<string, unknown>>;
   opportunities?: Array<Record<string, unknown>>;
   commitments?: Array<Record<string, unknown>>;
+  blocked_opportunities?: Array<Record<string, unknown>>;
   time_budget?: Record<string, unknown> | null;
+  occupancy_state?: Record<string, unknown> | null;
+  active_plan?: Record<string, unknown> | null;
+  drive_state?: Record<string, unknown> | null;
+  operator_effect_trace?: Array<Record<string, unknown>>;
   motive_chain?: string[];
   why_summaries?: Array<Record<string, unknown>>;
 }
@@ -240,6 +267,8 @@ interface SettlementInspectorData {
   routes?: Array<Record<string, unknown>>;
   market_clearing?: Record<string, unknown>;
   institution_queue?: Record<string, unknown>;
+  occupancy_mix?: Record<string, number>;
+  action_cadence?: Record<string, number>;
   accounting_transfers?: Array<Record<string, unknown>>;
   notable_events: EventRecord[];
 }
@@ -537,8 +566,12 @@ export function App() {
   const [durationDays, setDurationDays] = useState(30);
   const [snapshotEveryTicks, setSnapshotEveryTicks] = useState(24);
   const [regionId, setRegionId] = useState<RegionId>("crownvale");
+  const [npcCountMin, setNpcCountMin] = useState(DEFAULT_NPC_COUNT_MIN);
+  const [npcCountMax, setNpcCountMax] = useState(DEFAULT_NPC_COUNT_MAX);
 
   const [status, setStatus] = useState<RunStatus | null>(null);
+  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
+  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState("");
   const [timelineEvents, setTimelineEvents] = useState<EventRecord[]>([]);
   const [liveEvents, setLiveEvents] = useState<EventRecord[]>([]);
   const [eventDetail, setEventDetail] = useState<EventDetailData | null>(null);
@@ -763,6 +796,9 @@ export function App() {
     const household = asRecord(npcInspector.household_status);
     const ledger = asRecord(npcInspector.npc_ledger);
     const budget = asRecord(npcInspector.time_budget);
+    const occupancy = asRecord(npcInspector.occupancy_state);
+    const activePlan = asRecord(npcInspector.active_plan);
+    const drive = asRecord(npcInspector.drive_state);
     const contractCount = npcInspector.contract_status?.length ?? 0;
 
     return [
@@ -803,6 +839,27 @@ export function App() {
       {
         label: "Contracts",
         value: contractCount > 0 ? `${contractCount} active/known` : "(none)"
+      },
+      {
+        label: "Doing Now",
+        value: compactValue(
+          occupancy?.["state_tag"] ?? occupancy?.["occupancy"] ?? activePlan?.["action"] ?? "(idle)"
+        )
+      },
+      {
+        label: "Plan Remaining",
+        value: compactValue(
+          activePlan?.["remaining_ticks"] ?? occupancy?.["until_tick"] ?? "(none)"
+        )
+      },
+      {
+        label: "Top Need",
+        value: compactValue(
+          drive?.["need_food"] ??
+            drive?.["need_income"] ??
+            drive?.["need_safety"] ??
+            "(unknown)"
+        )
       }
     ];
   }, [npcInspector]);
@@ -840,6 +897,7 @@ export function App() {
     const institution = asRecord(settlementInspector.institution_profile);
     const market = asRecord(settlementInspector.market_clearing);
     const queue = asRecord(settlementInspector.institution_queue);
+    const cadence = asRecord(settlementInspector.action_cadence);
 
     return [
       {
@@ -885,6 +943,14 @@ export function App() {
         value: compactValue(
           market?.["status"] ?? market?.["clearing_state"] ?? market?.["price_pressure"]
         )
+      },
+      {
+        label: "Actions / Tick",
+        value: compactValue(cadence?.["actions_per_tick"])
+      },
+      {
+        label: "Actions / NPC / Day",
+        value: compactValue(cadence?.["actions_per_npc_per_day"])
       }
     ];
   }, [settlementInspector]);
@@ -935,6 +1001,30 @@ export function App() {
     setStatus(response.status);
     return response.status;
   }, [activeRunId, apiBase]);
+
+  const refreshRunHistory = useCallback(async () => {
+    const response = await requestJson<RunHistoryResponse>(
+      apiBase,
+      `/api/v1/runs?page_size=250`
+    );
+    setRunHistory(response.runs);
+
+    if (response.runs.length === 0) {
+      setSelectedHistoryRunId("");
+      return;
+    }
+
+    if (response.active_run_id && response.runs.some((run) => run.run_id === response.active_run_id)) {
+      setSelectedHistoryRunId(response.active_run_id);
+      return;
+    }
+
+    setSelectedHistoryRunId((current) =>
+      current && response.runs.some((run) => run.run_id === current)
+        ? current
+        : response.runs[0].run_id
+    );
+  }, [apiBase]);
 
   const refreshTimeline = useCallback(async () => {
     const params = new URLSearchParams();
@@ -1157,6 +1247,12 @@ export function App() {
   );
 
   const createRun = useCallback(async () => {
+    const normalizedNpcMin = Math.max(1, Math.floor(npcCountMin || DEFAULT_NPC_COUNT_MIN));
+    const normalizedNpcMax = Math.max(
+      normalizedNpcMin,
+      Math.floor(npcCountMax || DEFAULT_NPC_COUNT_MAX)
+    );
+
     const config: RunConfig = {
       schema_version: SCHEMA_VERSION,
       run_id: runId.trim(),
@@ -1164,8 +1260,8 @@ export function App() {
       duration_days: durationDays,
       region_id: regionId,
       snapshot_every_ticks: snapshotEveryTicks,
-      npc_count_min: 60,
-      npc_count_max: 90
+      npc_count_min: normalizedNpcMin,
+      npc_count_max: normalizedNpcMax
     };
 
     const response = await postJson<CreateRunResponse>(apiBase, "/api/v1/runs", {
@@ -1187,8 +1283,19 @@ export function App() {
     setRunId(response.run_id);
     setTimelineToTick(Math.max(24, response.status.current_tick + 24));
 
+    await refreshRunHistory();
     setInfo(`Run created: ${response.run_id}`);
-  }, [apiBase, durationDays, regionId, runId, seed, snapshotEveryTicks]);
+  }, [
+    apiBase,
+    durationDays,
+    npcCountMax,
+    npcCountMin,
+    refreshRunHistory,
+    regionId,
+    runId,
+    seed,
+    snapshotEveryTicks
+  ]);
 
   const onSubmitCreateRun = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -1258,12 +1365,50 @@ export function App() {
     withAction
   ]);
 
+  const onApplySelectedHistoryRun = useCallback(() => {
+    if (!selectedHistoryRunId) {
+      return;
+    }
+
+    const selected = runHistory.find((entry) => entry.run_id === selectedHistoryRunId);
+    if (!selected) {
+      return;
+    }
+
+    setRunId(selected.run_id);
+    setSeed(selected.seed);
+    setDurationDays(Math.max(1, selected.duration_days));
+    setSnapshotEveryTicks(Math.max(1, selected.snapshot_every_ticks));
+
+    if (REGION_OPTIONS.includes(selected.region_id as RegionId)) {
+      setRegionId(selected.region_id as RegionId);
+    }
+
+    setTimelineToTick(Math.max(24, selected.status.current_tick));
+    setInfo(
+      `Selected historical run ${selected.run_id}. If it is not active, recreate it from this config to inspect live endpoints.`
+    );
+  }, [runHistory, selectedHistoryRunId]);
+
   const onRefreshAll = useCallback(async () => {
     await withAction(async () => {
-      await Promise.all([refreshStatus(), refreshTimeline(), refreshCommands(), refreshSnapshots()]);
+      await Promise.all([
+        refreshStatus(),
+        refreshTimeline(),
+        refreshCommands(),
+        refreshSnapshots(),
+        refreshRunHistory()
+      ]);
       setInfo("Refreshed status, timeline, commands, and snapshots.");
     });
-  }, [refreshCommands, refreshSnapshots, refreshStatus, refreshTimeline, withAction]);
+  }, [
+    refreshCommands,
+    refreshRunHistory,
+    refreshSnapshots,
+    refreshStatus,
+    refreshTimeline,
+    withAction
+  ]);
 
   const onSelectEvent = useCallback(
     async (eventId: string) => {
@@ -1342,6 +1487,11 @@ export function App() {
     setComparisonRows([]);
     const summaryRows: SeedComparisonRow[] = [];
     const tickTarget = Math.max(1, comparisonTargetTick);
+    const normalizedNpcMin = Math.max(1, Math.floor(npcCountMin || DEFAULT_NPC_COUNT_MIN));
+    const normalizedNpcMax = Math.max(
+      normalizedNpcMin,
+      Math.floor(npcCountMax || DEFAULT_NPC_COUNT_MAX)
+    );
 
     for (const [index, seedValue] of seeds.entries()) {
       const comparisonRunId = `cmp_${seedValue}_${Date.now()}_${index}`;
@@ -1352,8 +1502,8 @@ export function App() {
         duration_days: durationDays,
         region_id: regionId,
         snapshot_every_ticks: snapshotEveryTicks,
-        npc_count_min: 60,
-        npc_count_max: 90
+        npc_count_min: normalizedNpcMin,
+        npc_count_max: normalizedNpcMax
       };
 
       await postJson<CreateRunResponse>(apiBase, "/api/v1/runs", {
@@ -1431,6 +1581,8 @@ export function App() {
     comparisonSeeds,
     comparisonTargetTick,
     durationDays,
+    npcCountMax,
+    npcCountMin,
     regionId,
     snapshotEveryTicks
   ]);
@@ -1602,6 +1754,12 @@ export function App() {
     status?.mode,
     streamRunId
   ]);
+
+  useEffect(() => {
+    void refreshRunHistory().catch(() => {
+      // run history is optional on initial load
+    });
+  }, [refreshRunHistory]);
 
   return (
     <main className="app-shell">
@@ -1814,6 +1972,43 @@ export function App() {
       <section className="panel run-panel">
         <h2>Run Control</h2>
 
+        <div className="run-history-controls">
+          <label>
+            Past runs
+            <select
+              value={selectedHistoryRunId}
+              onChange={(event) => setSelectedHistoryRunId(event.target.value)}
+            >
+              {runHistory.map((entry) => (
+                <option key={entry.run_id} value={entry.run_id}>
+                  {entry.run_id} · seed {entry.seed} · tick {entry.status.current_tick}
+                </option>
+              ))}
+              {runHistory.length === 0 ? (
+                <option value="">(no persisted runs found)</option>
+              ) : null}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={busy || !selectedHistoryRunId}
+            onClick={() => {
+              onApplySelectedHistoryRun();
+            }}
+          >
+            Use Selected Run
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void withAction(refreshRunHistory);
+            }}
+          >
+            Refresh Run List
+          </button>
+        </div>
+
         <form className="run-config" onSubmit={onSubmitCreateRun}>
           <label>
             Run ID
@@ -1851,6 +2046,30 @@ export function App() {
               value={snapshotEveryTicks}
               onChange={(event) =>
                 setSnapshotEveryTicks(Number(event.target.value) || 1)
+              }
+            />
+          </label>
+
+          <label>
+            NPC count min
+            <input
+              type="number"
+              min={1}
+              value={npcCountMin}
+              onChange={(event) =>
+                setNpcCountMin(Math.max(1, Number(event.target.value) || DEFAULT_NPC_COUNT_MIN))
+              }
+            />
+          </label>
+
+          <label>
+            NPC count max
+            <input
+              type="number"
+              min={1}
+              value={npcCountMax}
+              onChange={(event) =>
+                setNpcCountMax(Math.max(1, Number(event.target.value) || DEFAULT_NPC_COUNT_MAX))
               }
             />
           </label>
@@ -2376,6 +2595,32 @@ export function App() {
                     <p>Top intents: {npcInspector.top_intents.join(", ") || "(none)"}</p>
                     <p>Motive chain: {npcInspector.motive_chain?.join(" -> ") || "(none)"}</p>
                     <p>
+                      Doing now:{" "}
+                      {compactValue(
+                        asRecord(npcInspector.occupancy_state)?.["state_tag"] ??
+                          asRecord(npcInspector.occupancy_state)?.["occupancy"] ??
+                          "(idle)"
+                      )}
+                    </p>
+                    <p>
+                      Thinking now:{" "}
+                      {compactValue(
+                        npcInspector.reason_packet?.goal_id ??
+                          npcInspector.reason_packet?.selection_rationale ??
+                          "(none)"
+                      )}
+                    </p>
+                    <p>
+                      Idling signal:{" "}
+                      {compactValue(
+                        asRecord(npcInspector.occupancy_state)?.["occupancy"] === "idle" ||
+                          asRecord(npcInspector.occupancy_state)?.["occupancy"] === "resting" ||
+                          asRecord(npcInspector.occupancy_state)?.["occupancy"] === "loitering"
+                          ? "yes"
+                          : "no"
+                      )}
+                    </p>
+                    <p>
                       Belief updates: {npcInspector.recent_belief_updates.join(", ") || "(none)"}
                     </p>
                     <p>
@@ -2384,11 +2629,21 @@ export function App() {
                       {npcInspector.opportunities?.length ?? 0} · Commitments:{" "}
                       {npcInspector.commitments?.length ?? 0}
                     </p>
+                    <p>Blocked opportunities: {npcInspector.blocked_opportunities?.length ?? 0}</p>
                   </div>
                   {npcInspector.reason_packet ? (
                     <div className="inspector-block">
                       <h4>Latest reason packet</h4>
                       <p>{npcInspector.reason_packet.selection_rationale}</p>
+                      <p>
+                        Goal/Plan:{" "}
+                        {compactValue(npcInspector.reason_packet.goal_id)} /{" "}
+                        {compactValue(npcInspector.reason_packet.plan_id)}
+                      </p>
+                      <p>
+                        Operator chain:{" "}
+                        {npcInspector.reason_packet.operator_chain_ids?.join(", ") || "(none)"}
+                      </p>
                       <p>
                         Why chain: {npcInspector.reason_packet.why_chain?.join(" -> ") || "(none)"}
                       </p>
@@ -2448,6 +2703,32 @@ export function App() {
                         {JSON.stringify(npcInspector.time_budget ?? {}, null, 2)}
                       </pre>
                     </div>
+                    <div>
+                      <h4>Occupancy + plan</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(
+                          {
+                            occupancy_state: npcInspector.occupancy_state ?? {},
+                            active_plan: npcInspector.active_plan ?? {}
+                          },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+                    <div>
+                      <h4>Drive + trace</h4>
+                      <pre className="json-block">
+                        {JSON.stringify(
+                          {
+                            drive_state: npcInspector.drive_state ?? {},
+                            operator_effect_trace: npcInspector.operator_effect_trace ?? []
+                          },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
                   </div>
                   <p>Why summaries: {npcInspector.why_summaries?.length ?? 0}</p>
                 </>
@@ -2477,6 +2758,12 @@ export function App() {
                   <p>Production nodes: {settlementInspector.production_nodes?.length ?? 0}</p>
                   <p>Groups: {settlementInspector.groups?.length ?? 0}</p>
                   <p>Routes: {settlementInspector.routes?.length ?? 0}</p>
+                  <p>
+                    Occupancy mix:{" "}
+                    {Object.entries(settlementInspector.occupancy_mix ?? {})
+                      .map(([kind, count]) => `${kind}:${count}`)
+                      .join(", ") || "(none)"}
+                  </p>
                   <div className="inspector-block">
                     <h4>Pressure readouts</h4>
                     <div className="inspector-chip-list">

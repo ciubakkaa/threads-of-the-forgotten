@@ -18,6 +18,17 @@ pub struct ReplaySlice {
     pub events: Vec<Event>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRunSummary {
+    pub run_id: String,
+    pub seed: String,
+    pub region_id: String,
+    pub duration_days: u32,
+    pub snapshot_every_ticks: u64,
+    pub updated_at: String,
+    pub status: RunStatus,
+}
+
 #[derive(Debug)]
 pub enum PersistenceError {
     Sqlite(rusqlite::Error),
@@ -289,11 +300,68 @@ impl SqliteRunStore {
         Ok(row.is_some())
     }
 
+    pub fn list_runs(&self, limit: usize) -> Result<Vec<PersistedRunSummary>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                run_id,
+                seed,
+                region_id,
+                duration_days,
+                snapshot_every_ticks,
+                updated_at,
+                status_json
+             FROM runs
+             ORDER BY updated_at DESC, run_id DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            let (
+                run_id,
+                seed,
+                region_id,
+                duration_days_raw,
+                snapshot_every_ticks_raw,
+                updated_at,
+                status_json,
+            ) = row?;
+            let status = serde_json::from_str::<RunStatus>(&status_json)?;
+
+            summaries.push(PersistedRunSummary {
+                run_id,
+                seed,
+                region_id,
+                duration_days: u32::try_from(duration_days_raw).unwrap_or(0),
+                snapshot_every_ticks: u64::try_from(snapshot_every_ticks_raw).unwrap_or(0),
+                updated_at,
+                status,
+            });
+        }
+
+        Ok(summaries)
+    }
+
     pub fn delete_run(&mut self, run_id: &str) -> Result<(), PersistenceError> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM commands WHERE run_id = ?1", params![run_id])?;
         tx.execute("DELETE FROM events WHERE run_id = ?1", params![run_id])?;
-        tx.execute("DELETE FROM reason_packets WHERE run_id = ?1", params![run_id])?;
+        tx.execute(
+            "DELETE FROM reason_packets WHERE run_id = ?1",
+            params![run_id],
+        )?;
         tx.execute("DELETE FROM snapshots WHERE run_id = ?1", params![run_id])?;
         tx.execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])?;
         tx.commit()?;

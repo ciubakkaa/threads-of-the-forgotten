@@ -219,6 +219,14 @@ h1 {
   align-items: end;
 }
 
+.run-history-controls {
+  margin-top: 0.68rem;
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) auto auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
 .control-row {
   display: flex;
   flex-wrap: wrap;
@@ -692,6 +700,7 @@ g.focused .map-node {
   }
 
   .run-config,
+  .run-history-controls,
   .timeline-filters,
   .scenario-grid,
   .comparison-form {

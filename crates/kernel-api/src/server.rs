@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::{EngineApi, PersistedCommandEntry, PersistenceError};
+use crate::{EngineApi, PersistedCommandEntry, PersistedRunSummary, PersistenceError};
 
 const DEFAULT_PAGE_SIZE: usize = 500;
 const MAX_PAGE_SIZE: usize = 5000;
@@ -149,7 +149,7 @@ pub async fn serve(addr: SocketAddr) -> Result<(), ServerError> {
 
 fn router(state: AppState) -> Router {
     Router::new()
-        .route("/api/v1/runs", post(create_run))
+        .route("/api/v1/runs", post(create_run).get(list_runs))
         .route("/api/v1/runs/{run_id}/start", post(start_run))
         .route("/api/v1/runs/{run_id}/pause", post(pause_run))
         .route("/api/v1/runs/{run_id}/step", post(step_run))
@@ -230,6 +230,51 @@ struct CreateRunResponse {
     status: RunStatus,
     replaced_existing_run: bool,
     started: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListRunsQuery {
+    page_size: Option<usize>,
+    sqlite_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListRunsResponse {
+    schema_version: String,
+    active_run_id: Option<String>,
+    runs: Vec<PersistedRunSummary>,
+}
+
+async fn list_runs(
+    State(state): State<AppState>,
+    Query(query): Query<ListRunsQuery>,
+) -> Result<Json<ListRunsResponse>, HttpApiError> {
+    let page_size = query.page_size.unwrap_or(200).max(1).min(MAX_PAGE_SIZE);
+
+    let sqlite_path = query
+        .sqlite_path
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(default_sqlite_path);
+
+    let active_run_id = {
+        let inner = state.inner.lock().await;
+        inner
+            .engine
+            .as_ref()
+            .map(|engine| engine.run_id().to_string())
+    };
+
+    let store = crate::persistence::SqliteRunStore::open(sqlite_path)
+        .map_err(HttpApiError::from_persistence)?;
+    let runs = store
+        .list_runs(page_size)
+        .map_err(HttpApiError::from_persistence)?;
+
+    Ok(Json(ListRunsResponse {
+        schema_version: SCHEMA_VERSION_V1.to_string(),
+        active_run_id,
+        runs,
+    }))
 }
 
 async fn create_run(
@@ -931,6 +976,18 @@ async fn get_npc_inspector(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let blocked_opportunities = opportunities
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(|value| value.eq_ignore_ascii_case("blocked"))
+                    .unwrap_or(false)
+            })
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>();
         let commitments = snapshot
             .region_state
             .get("commitments")
@@ -952,6 +1009,48 @@ async fn get_npc_inspector(
         let time_budget = snapshot
             .region_state
             .get("time_budgets")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("npc_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == npc_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned();
+        let occupancy_state = snapshot
+            .region_state
+            .get("occupancy")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("npc_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == npc_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned();
+        let active_plan = snapshot
+            .region_state
+            .get("active_plans")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry
+                        .get("npc_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == npc_id)
+                        .unwrap_or(false)
+                })
+            })
+            .cloned();
+        let drive_state = snapshot
+            .region_state
+            .get("drives")
             .and_then(Value::as_array)
             .and_then(|entries| {
                 entries.iter().find(|entry| {
@@ -985,6 +1084,40 @@ async fn get_npc_inspector(
         let motive_chain = latest_reason_packet
             .map(|packet| packet.why_chain.clone())
             .unwrap_or_default();
+        let recent_action_event_ids = recent_actions
+            .iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<HashSet<_>>();
+        let active_plan_id = active_plan
+            .as_ref()
+            .and_then(|entry| entry.get("plan_id"))
+            .and_then(Value::as_str);
+        let operator_effect_trace = snapshot
+            .region_state
+            .get("operator_effect_trace")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        let source_event_id = entry
+                            .get("source_event_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let source_plan_id = entry
+                            .get("source_plan_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        recent_action_event_ids.contains(source_event_id)
+                            || active_plan_id
+                                .map(|plan_id| plan_id == source_plan_id)
+                                .unwrap_or(false)
+                    })
+                    .take(16)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         QueryResponse {
             schema_version: SCHEMA_VERSION_V1.to_string(),
@@ -1005,8 +1138,13 @@ async fn get_npc_inspector(
                 "relationship_edges": relationship_edges,
                 "active_beliefs": active_beliefs,
                 "opportunities": opportunities,
+                "blocked_opportunities": blocked_opportunities,
                 "commitments": commitments,
                 "time_budget": time_budget,
+                "occupancy_state": occupancy_state,
+                "active_plan": active_plan,
+                "drive_state": drive_state,
+                "operator_effect_trace": operator_effect_trace,
                 "motive_chain": motive_chain,
                 "why_summaries": why_summaries,
                 "key_relationships": relationship_edges.clone(),
@@ -1089,6 +1227,49 @@ async fn get_settlement_inspector(
             .iter()
             .filter(|event| event.event_type == EventType::RelationshipShifted)
             .count();
+        let recent_action_events = recent_events
+            .iter()
+            .filter(|event| event.event_type == EventType::NpcActionCommitted)
+            .collect::<Vec<_>>();
+        let active_actor_count = recent_action_events
+            .iter()
+            .filter_map(|event| event.actors.first().map(|actor| actor.actor_id.as_str()))
+            .collect::<HashSet<_>>()
+            .len();
+        let window_ticks = current_tick.saturating_sub(recent_from_tick).max(1) + 1;
+        let actions_per_tick = recent_action_events.len() as f64 / window_ticks as f64;
+        let actions_per_npc_per_day = if active_actor_count == 0 {
+            0.0
+        } else {
+            recent_action_events.len() as f64
+                / active_actor_count as f64
+                / (window_ticks as f64 / 24.0)
+        };
+        let occupancy_mix = snapshot
+            .region_state
+            .get("occupancy")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                let mut mix = HashMap::<String, usize>::new();
+                for entry in entries {
+                    let is_local = entry
+                        .get("location_id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == settlement_id)
+                        .unwrap_or(false);
+                    if !is_local {
+                        continue;
+                    }
+                    let occupancy = entry
+                        .get("occupancy")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string();
+                    *mix.entry(occupancy).or_insert(0) += 1;
+                }
+                mix
+            })
+            .unwrap_or_default();
 
         let stock_ledger = snapshot
             .region_state
@@ -1323,6 +1504,13 @@ async fn get_settlement_inspector(
                 "production_nodes": production_nodes,
                 "groups": groups,
                 "routes": routes,
+                "occupancy_mix": occupancy_mix,
+                "action_cadence": {
+                    "window_ticks": window_ticks,
+                    "actions_per_tick": actions_per_tick,
+                    "actions_per_npc_per_day": actions_per_npc_per_day,
+                    "active_actor_count": active_actor_count,
+                },
                 "market_clearing": market_clearing,
                 "institution_queue": institution_queue,
                 "accounting_transfers": accounting_transfers,

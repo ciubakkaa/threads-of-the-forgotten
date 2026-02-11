@@ -11,3 +11,4 @@ observatory-web/dist/
 .DS_Store
 *.sqlite*
 plans
+.kiro

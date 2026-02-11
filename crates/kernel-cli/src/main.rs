@@ -15,7 +15,9 @@ fn print_usage() {
     println!("  run-to <tick>");
     println!("  serve [addr]");
     println!("    default addr: 127.0.0.1:8080");
-    println!("  simulate <run_id> <seed> [ticks] [sqlite_path]");
+    println!(
+        "  simulate <run_id> <seed> [ticks] [sqlite_path] [--ticks N] [--db PATH] [--npc-count N|--npc-min N --npc-max N]"
+    );
     println!("    runs deterministic simulation to target tick and persists to sqlite");
 }
 
@@ -35,6 +37,11 @@ fn parse_seed(value: Option<&String>) -> Result<u64, String> {
     let raw = value.ok_or_else(|| "missing seed".to_string())?;
     raw.parse::<u64>()
         .map_err(|_| format!("invalid seed: {raw}"))
+}
+
+fn parse_u16(raw: &str, label: &str) -> Result<u16, String> {
+    raw.parse::<u16>()
+        .map_err(|_| format!("invalid {}: {}", label, raw))
 }
 
 fn default_sqlite_path() -> String {
@@ -57,22 +64,93 @@ fn run_simulation(args: &[String]) -> Result<(), String> {
         .cloned()
         .ok_or_else(|| "missing run_id".to_string())?;
     let seed = parse_seed(args.get(3))?;
-    let target_tick = args
-        .get(4)
-        .map(|value| {
-            value
+    let mut target_tick = 720_u64;
+    let mut sqlite_path = default_sqlite_path();
+    let mut npc_count_min = None::<u16>;
+    let mut npc_count_max = None::<u16>;
+
+    let mut rest = args
+        .get(4..)
+        .map(|slice| slice.to_vec())
+        .unwrap_or_default();
+    if let Some(value) = rest.first() {
+        if !value.starts_with("--") {
+            target_tick = value
                 .parse::<u64>()
-                .map_err(|_| format!("invalid ticks: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(720);
-    let sqlite_path = parse_sqlite_path(args.get(5));
+                .map_err(|_| format!("invalid ticks: {value}"))?;
+            rest.remove(0);
+        }
+    }
+    if let Some(value) = rest.first() {
+        if !value.starts_with("--") {
+            sqlite_path = parse_sqlite_path(Some(value));
+            rest.remove(0);
+        }
+    }
+
+    let mut idx = 0usize;
+    while idx < rest.len() {
+        match rest[idx].as_str() {
+            "--ticks" => {
+                let value = rest
+                    .get(idx + 1)
+                    .ok_or_else(|| "missing value for --ticks".to_string())?;
+                target_tick = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("invalid ticks: {value}"))?;
+                idx += 2;
+            }
+            "--sqlite-path" | "--db" => {
+                let value = rest
+                    .get(idx + 1)
+                    .ok_or_else(|| "missing value for --sqlite-path".to_string())?;
+                sqlite_path = parse_sqlite_path(Some(value));
+                idx += 2;
+            }
+            "--npc-count" => {
+                let value = rest
+                    .get(idx + 1)
+                    .ok_or_else(|| "missing value for --npc-count".to_string())?;
+                let parsed = parse_u16(value, "npc-count")?;
+                npc_count_min = Some(parsed);
+                npc_count_max = Some(parsed);
+                idx += 2;
+            }
+            "--npc-min" => {
+                let value = rest
+                    .get(idx + 1)
+                    .ok_or_else(|| "missing value for --npc-min".to_string())?;
+                npc_count_min = Some(parse_u16(value, "npc-min")?);
+                idx += 2;
+            }
+            "--npc-max" => {
+                let value = rest
+                    .get(idx + 1)
+                    .ok_or_else(|| "missing value for --npc-max".to_string())?;
+                npc_count_max = Some(parse_u16(value, "npc-max")?);
+                idx += 2;
+            }
+            other => return Err(format!("unknown simulate argument: {}", other)),
+        }
+    }
 
     let mut config = RunConfig::default();
     config.run_id = run_id.clone();
     config.seed = seed;
     config.duration_days = ((target_tick + 23) / 24).max(1) as u32;
     config.snapshot_every_ticks = 24;
+    if let Some(min) = npc_count_min {
+        config.npc_count_min = min;
+    }
+    if let Some(max) = npc_count_max {
+        config.npc_count_max = max;
+    }
+    if config.npc_count_min > config.npc_count_max {
+        return Err(format!(
+            "invalid npc bounds: min {} > max {}",
+            config.npc_count_min, config.npc_count_max
+        ));
+    }
 
     let mut api = EngineApi::from_config(config);
     api.attach_sqlite_store(PathBuf::from(&sqlite_path))
@@ -90,8 +168,15 @@ fn run_simulation(args: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "simulated run_id={} seed={} committed={} tick={}/{} sqlite={}",
-        run_id, seed, committed, current_tick, max_ticks, sqlite_path
+        "simulated run_id={} seed={} committed={} tick={}/{} sqlite={} npc_count_min={} npc_count_max={}",
+        run_id,
+        seed,
+        committed,
+        current_tick,
+        max_ticks,
+        sqlite_path,
+        api.config().npc_count_min,
+        api.config().npc_count_max
     );
     Ok(())
 }
