@@ -9,9 +9,10 @@ use contracts::{
     ApiError, Command, CommandPayload, CommandResult, CommandType, ErrorCode, Event, ReasonPacket,
     RunConfig, RunStatus, Snapshot, SCHEMA_VERSION_V1,
 };
-use kernel_core::Kernel;
+use kernel_core::AgentWorld;
 use persistence::SqliteRunStore;
 pub use persistence::{PersistedCommandEntry, PersistedRunSummary, PersistenceError, ReplaySlice};
+use serde_json::Value;
 pub use server::{serve, ServerError};
 
 #[derive(Debug)]
@@ -25,7 +26,7 @@ struct PersistenceState {
 
 #[derive(Debug)]
 pub struct EngineApi {
-    kernel: Kernel,
+    kernel: AgentWorld,
     command_audit: Vec<CommandResult>,
     command_log: Vec<PersistedCommandEntry>,
     persistence: Option<PersistenceState>,
@@ -35,7 +36,7 @@ pub struct EngineApi {
 impl EngineApi {
     pub fn from_config(config: RunConfig) -> Self {
         Self {
-            kernel: Kernel::new(config),
+            kernel: AgentWorld::new(config),
             command_audit: Vec::new(),
             command_log: Vec::new(),
             persistence: None,
@@ -197,7 +198,7 @@ impl EngineApi {
     pub fn step(&mut self, steps: u64) -> (&RunStatus, u64) {
         let mut committed = 0_u64;
         for _ in 0..steps.max(1) {
-            if !self.kernel.step_tick() {
+            if !self.kernel.step() {
                 break;
             }
             committed += 1;
@@ -209,7 +210,7 @@ impl EngineApi {
     pub fn run_to_tick(&mut self, tick: u64) -> (&RunStatus, u64) {
         let mut committed = 0_u64;
         while self.kernel.status().current_tick < tick {
-            if !self.kernel.step_tick() {
+            if !self.kernel.step() {
                 break;
             }
             committed += 1;
@@ -262,6 +263,14 @@ impl EngineApi {
 
     pub fn reason_packets(&self) -> &[ReasonPacket] {
         self.kernel.reason_packets()
+    }
+
+    pub fn inspect_npc(&self, npc_id: &str) -> Option<Value> {
+        self.kernel.inspect_npc(npc_id)
+    }
+
+    pub fn inspect_settlement(&self, settlement_id: &str) -> Option<Value> {
+        self.kernel.inspect_settlement(settlement_id)
     }
 
     fn flush_persistence_if_enabled(&mut self) {

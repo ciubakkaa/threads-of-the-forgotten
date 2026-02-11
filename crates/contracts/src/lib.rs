@@ -38,6 +38,44 @@ pub struct RunConfig {
     pub enabled_systems: BTreeMap<String, bool>,
     #[serde(default)]
     pub scenario_flags: BTreeMap<String, bool>,
+    #[serde(default = "default_planning_beam_width")]
+    pub planning_beam_width: u16,
+    #[serde(default = "default_planning_horizon")]
+    pub planning_horizon: u8,
+    #[serde(default = "default_idle_threshold")]
+    pub idle_threshold: i64,
+    #[serde(default = "default_max_reaction_depth")]
+    pub max_reaction_depth: u8,
+    #[serde(default = "default_scheduling_window_size")]
+    pub scheduling_window_size: u64,
+    #[serde(default = "default_drive_decay_rates")]
+    pub drive_decay_rates: BTreeMap<String, i64>,
+    #[serde(default = "default_drive_urgency_thresholds")]
+    pub drive_urgency_thresholds: BTreeMap<String, i64>,
+    #[serde(default = "default_rent_period_ticks")]
+    pub rent_period_ticks: u64,
+    #[serde(default = "default_wage_period_ticks_daily")]
+    pub wage_period_ticks_daily: u64,
+    #[serde(default = "default_wage_period_ticks_weekly")]
+    pub wage_period_ticks_weekly: u64,
+    #[serde(default = "default_production_rate_ticks")]
+    pub production_rate_ticks: u64,
+    #[serde(default = "default_spoilage_rate_ticks")]
+    pub spoilage_rate_ticks: u64,
+    #[serde(default = "default_market_clearing_frequency_ticks")]
+    pub market_clearing_frequency_ticks: u64,
+    #[serde(default = "default_trust_decay_rate")]
+    pub trust_decay_rate: i64,
+    #[serde(default = "default_rumor_distortion_bps")]
+    pub rumor_distortion_bps: u16,
+    #[serde(default = "default_group_cohesion_threshold")]
+    pub group_cohesion_threshold: i64,
+    #[serde(default = "default_relationship_positive_trust_delta")]
+    pub relationship_positive_trust_delta: i64,
+    #[serde(default = "default_relationship_negative_trust_delta")]
+    pub relationship_negative_trust_delta: i64,
+    #[serde(default = "default_relationship_grievance_delta")]
+    pub relationship_grievance_delta: i64,
     pub notes: Option<String>,
 }
 
@@ -50,6 +88,10 @@ impl RunConfig {
         let min = self.npc_count_min.max(1);
         let max = self.npc_count_max.max(min);
         (min, max)
+    }
+
+    pub fn rumor_distortion_probability(&self) -> f32 {
+        f32::from(self.rumor_distortion_bps.min(10_000)) / 10_000.0
     }
 }
 
@@ -66,6 +108,25 @@ impl Default for RunConfig {
             npc_count_max: default_npc_count_max(),
             enabled_systems: BTreeMap::new(),
             scenario_flags: BTreeMap::new(),
+            planning_beam_width: default_planning_beam_width(),
+            planning_horizon: default_planning_horizon(),
+            idle_threshold: default_idle_threshold(),
+            max_reaction_depth: default_max_reaction_depth(),
+            scheduling_window_size: default_scheduling_window_size(),
+            drive_decay_rates: default_drive_decay_rates(),
+            drive_urgency_thresholds: default_drive_urgency_thresholds(),
+            rent_period_ticks: default_rent_period_ticks(),
+            wage_period_ticks_daily: default_wage_period_ticks_daily(),
+            wage_period_ticks_weekly: default_wage_period_ticks_weekly(),
+            production_rate_ticks: default_production_rate_ticks(),
+            spoilage_rate_ticks: default_spoilage_rate_ticks(),
+            market_clearing_frequency_ticks: default_market_clearing_frequency_ticks(),
+            trust_decay_rate: default_trust_decay_rate(),
+            rumor_distortion_bps: default_rumor_distortion_bps(),
+            group_cohesion_threshold: default_group_cohesion_threshold(),
+            relationship_positive_trust_delta: default_relationship_positive_trust_delta(),
+            relationship_negative_trust_delta: default_relationship_negative_trust_delta(),
+            relationship_grievance_delta: default_relationship_grievance_delta(),
             notes: None,
         }
     }
@@ -77,6 +138,98 @@ fn default_npc_count_min() -> u16 {
 
 fn default_npc_count_max() -> u16 {
     10
+}
+
+fn default_planning_beam_width() -> u16 {
+    24
+}
+
+fn default_planning_horizon() -> u8 {
+    4
+}
+
+fn default_idle_threshold() -> i64 {
+    10
+}
+
+fn default_max_reaction_depth() -> u8 {
+    4
+}
+
+fn default_scheduling_window_size() -> u64 {
+    1
+}
+
+fn default_drive_decay_rates() -> BTreeMap<String, i64> {
+    let mut rates = BTreeMap::new();
+    rates.insert("food".to_string(), 3);
+    rates.insert("shelter".to_string(), 1);
+    rates.insert("income".to_string(), 2);
+    rates.insert("safety".to_string(), 1);
+    rates.insert("belonging".to_string(), 1);
+    rates.insert("status".to_string(), 1);
+    rates.insert("health".to_string(), 2);
+    rates
+}
+
+fn default_drive_urgency_thresholds() -> BTreeMap<String, i64> {
+    let mut thresholds = BTreeMap::new();
+    thresholds.insert("food".to_string(), 70);
+    thresholds.insert("shelter".to_string(), 75);
+    thresholds.insert("income".to_string(), 70);
+    thresholds.insert("safety".to_string(), 75);
+    thresholds.insert("belonging".to_string(), 65);
+    thresholds.insert("status".to_string(), 65);
+    thresholds.insert("health".to_string(), 70);
+    thresholds
+}
+
+fn default_rent_period_ticks() -> u64 {
+    30 * TICKS_PER_DAY
+}
+
+fn default_wage_period_ticks_daily() -> u64 {
+    TICKS_PER_DAY
+}
+
+fn default_wage_period_ticks_weekly() -> u64 {
+    7 * TICKS_PER_DAY
+}
+
+fn default_production_rate_ticks() -> u64 {
+    TICKS_PER_DAY
+}
+
+fn default_spoilage_rate_ticks() -> u64 {
+    3 * TICKS_PER_DAY
+}
+
+fn default_market_clearing_frequency_ticks() -> u64 {
+    TICKS_PER_DAY
+}
+
+fn default_trust_decay_rate() -> i64 {
+    1
+}
+
+fn default_rumor_distortion_bps() -> u16 {
+    1_200
+}
+
+fn default_group_cohesion_threshold() -> i64 {
+    60
+}
+
+fn default_relationship_positive_trust_delta() -> i64 {
+    8
+}
+
+fn default_relationship_negative_trust_delta() -> i64 {
+    20
+}
+
+fn default_relationship_grievance_delta() -> i64 {
+    25
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1000,6 +1153,24 @@ pub enum EventType {
     MarketFailed,
     AccountingTransferRecorded,
     InstitutionQueueUpdated,
+    AgentWake,
+    AgentIdle,
+    PlanCreated,
+    PlanStepStarted,
+    PlanStepCompleted,
+    PlanInterrupted,
+    PlanAbandoned,
+    ConflictDetected,
+    ConflictResolved,
+    DriveThresholdCrossed,
+    AspirationChanged,
+    BeliefReconciled,
+    RumorPropagated,
+    RumorDistorted,
+    InstitutionQueueFull,
+    InstitutionCorruptionEvent,
+    MarketClearingFailed,
+    ReactionDepthExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1072,6 +1243,474 @@ pub struct Snapshot {
     pub npc_state_refs: Value,
     pub diff_from_prev_snapshot: Option<Value>,
     pub perf_stats: Option<Value>,
+    #[serde(default)]
+    pub agents: Vec<AgentSnapshot>,
+    #[serde(default)]
+    pub scheduler_state: Option<SchedulerSnapshot>,
+    #[serde(default)]
+    pub world_state_v2: Option<WorldStateSnapshot>,
+    #[serde(default)]
+    pub economy_ledger_v2: Option<EconomyLedgerSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum DriveKind {
+    Food,
+    Shelter,
+    Income,
+    Safety,
+    Belonging,
+    Status,
+    Health,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriveValue {
+    pub current: i64,
+    pub decay_rate: i64,
+    pub urgency_threshold: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DriveContext {
+    pub physical_labor: bool,
+    pub exposed_to_weather: bool,
+    pub social_stress: i64,
+    pub illness_level: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriveSystem {
+    pub food: DriveValue,
+    pub shelter: DriveValue,
+    pub income: DriveValue,
+    pub safety: DriveValue,
+    pub belonging: DriveValue,
+    pub status: DriveValue,
+    pub health: DriveValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilitySet {
+    pub physical: i64,
+    pub social: i64,
+    pub trade: i64,
+    pub combat: i64,
+    pub literacy: i64,
+    pub influence: i64,
+    pub stealth: i64,
+    pub care: i64,
+    pub law: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Temperament {
+    Stoic,
+    Choleric,
+    Melancholic,
+    Sanguine,
+    Volatile,
+    Calm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersonalityTraits {
+    pub bravery: i64,
+    pub morality: i64,
+    pub impulsiveness: i64,
+    pub sociability: i64,
+    pub ambition: i64,
+    pub empathy: i64,
+    pub patience: i64,
+    pub curiosity: i64,
+    pub jealousy: i64,
+    pub pride: i64,
+    pub vindictiveness: i64,
+    pub greed: i64,
+    pub loyalty: i64,
+    pub honesty: i64,
+    pub piety: i64,
+    pub vanity: i64,
+    pub humor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdentityProfile {
+    pub profession: String,
+    pub capabilities: CapabilitySet,
+    pub personality: PersonalityTraits,
+    pub temperament: Temperament,
+    #[serde(default)]
+    pub values: Vec<String>,
+    #[serde(default)]
+    pub likes: Vec<String>,
+    #[serde(default)]
+    pub dislikes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Aspiration {
+    pub aspiration_id: String,
+    pub label: String,
+    pub updated_tick: u64,
+    pub cause: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AspirationChange {
+    pub npc_id: String,
+    pub old_aspiration: Option<Aspiration>,
+    pub new_aspiration: Aspiration,
+    pub cause: String,
+    pub tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryEntry {
+    pub memory_id: String,
+    pub tick: u64,
+    pub topic: String,
+    pub details: Value,
+    pub confidence: i64,
+    pub salience: i64,
+    pub source: BeliefSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BeliefClaim {
+    pub claim_id: String,
+    pub npc_id: String,
+    pub topic: String,
+    pub content: String,
+    pub confidence: i64,
+    pub source: BeliefSource,
+    pub last_updated_tick: u64,
+    pub uncertain: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Goal {
+    pub goal_id: String,
+    pub label: String,
+    pub priority: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningMode {
+    Reactive,
+    Deliberate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParamSchema {
+    #[serde(default)]
+    pub required: Vec<ParamDef>,
+    #[serde(default)]
+    pub optional: Vec<ParamDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParamDef {
+    pub name: String,
+    pub param_type: ParamType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamType {
+    NpcId,
+    LocationId,
+    ObjectId,
+    InstitutionId,
+    ResourceType,
+    Quantity,
+    Method(Vec<String>),
+    FreeText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct OperatorParams {
+    pub target_npc: Option<String>,
+    pub target_location: Option<String>,
+    pub target_object: Option<String>,
+    pub target_institution: Option<String>,
+    pub resource_type: Option<String>,
+    pub quantity: Option<i64>,
+    pub method: Option<String>,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactPredicate {
+    pub fact_key: String,
+    pub operator: String,
+    pub expected: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EffectTemplate {
+    pub fact_key: String,
+    pub delta: i64,
+    pub location_selector: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorDef {
+    pub operator_id: String,
+    pub family: String,
+    pub display_name: String,
+    pub param_schema: ParamSchema,
+    pub duration_ticks: u64,
+    pub risk: i64,
+    pub visibility: i64,
+    #[serde(default)]
+    pub preconditions: Vec<FactPredicate>,
+    #[serde(default)]
+    pub effects: Vec<EffectTemplate>,
+    #[serde(default)]
+    pub drive_effects: Vec<(DriveKind, i64)>,
+    #[serde(default)]
+    pub capability_requirements: Vec<(String, i64)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BoundOperator {
+    pub operator_id: String,
+    pub parameters: OperatorParams,
+    pub duration_ticks: u64,
+    #[serde(default)]
+    pub preconditions: Vec<FactPredicate>,
+    #[serde(default)]
+    pub effects: Vec<WorldFactDelta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandidatePlan {
+    pub plan_id: String,
+    pub goal: Goal,
+    #[serde(default)]
+    pub steps: Vec<BoundOperator>,
+    pub planning_mode: PlanningMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanScore {
+    pub plan_id: String,
+    pub score: i64,
+    #[serde(default)]
+    pub factors: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivePlan {
+    pub npc_id: String,
+    pub plan_id: String,
+    pub goal: Goal,
+    pub planning_mode: PlanningMode,
+    #[serde(default)]
+    pub steps: Vec<BoundOperator>,
+    pub next_step_index: usize,
+    pub created_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanSelection {
+    pub selected_plan_id: Option<String>,
+    pub idle_reason: Option<String>,
+    #[serde(default)]
+    pub scores: Vec<PlanScore>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeReason {
+    Idle,
+    PlanStepComplete,
+    Interrupted,
+    Reactive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledEvent {
+    pub wake_tick: u64,
+    pub priority: u64,
+    pub agent_id: String,
+    pub reason: WakeReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentAction {
+    Execute(BoundOperator),
+    Continue,
+    Idle(String),
+    Replan,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Money,
+    Food,
+    Fuel,
+    Medicine,
+    Item,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceTransfer {
+    pub from_account: String,
+    pub to_account: String,
+    pub resource_kind: ResourceKind,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorldMutation {
+    pub agent_id: String,
+    pub operator_id: String,
+    #[serde(default)]
+    pub deltas: Vec<WorldFactDelta>,
+    #[serde(default)]
+    pub resource_transfers: Vec<ResourceTransfer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitResult {
+    pub committed: bool,
+    pub event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConflictResult {
+    pub conflicting_agent_id: String,
+    pub conflicting_resource: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Observation {
+    pub event_id: String,
+    pub tick: u64,
+    pub location_id: String,
+    pub event_type: EventType,
+    #[serde(default)]
+    pub actors: Vec<String>,
+    pub visibility: i64,
+    pub details: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RumorPayload {
+    pub rumor_id: String,
+    pub source_npc_id: String,
+    pub core_claim: String,
+    pub details: String,
+    pub hop_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelationshipEdge {
+    pub source_npc_id: String,
+    pub target_npc_id: String,
+    pub trust: i64,
+    pub reputation: i64,
+    pub obligation: i64,
+    pub grievance: i64,
+    pub fear: i64,
+    pub respect: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountingTransfer {
+    pub transfer_id: String,
+    pub tick: u64,
+    pub from_account: String,
+    pub to_account: String,
+    pub resource_kind: ResourceKind,
+    pub amount: i64,
+    pub cause_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AccountBalance {
+    pub money: i64,
+    pub food: i64,
+    pub fuel: i64,
+    pub medicine: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RejectedPlan {
+    pub plan_id: String,
+    pub goal: Goal,
+    pub score: i64,
+    pub rejection_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanSummary {
+    pub plan_id: String,
+    pub goal: Goal,
+    pub utility_score: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasonEnvelope {
+    pub agent_id: String,
+    pub tick: u64,
+    pub goal: Goal,
+    pub selected_plan: PlanSummary,
+    #[serde(default)]
+    pub operator_chain: Vec<String>,
+    #[serde(default)]
+    pub drive_pressures: Vec<(DriveKind, i64)>,
+    #[serde(default)]
+    pub rejected_alternatives: Vec<RejectedPlan>,
+    #[serde(default)]
+    pub contextual_constraints: Vec<String>,
+    pub planning_mode: PlanningMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSnapshot {
+    pub agent_id: String,
+    pub identity: IdentityProfile,
+    pub drives: DriveSystem,
+    #[serde(default)]
+    pub beliefs: Vec<BeliefClaim>,
+    #[serde(default)]
+    pub memories: Vec<MemoryEntry>,
+    pub active_plan: Option<ActivePlan>,
+    pub occupancy: NpcOccupancyState,
+    pub aspiration: Aspiration,
+    pub location_id: String,
+    pub next_wake_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchedulerSnapshot {
+    pub current_tick: u64,
+    #[serde(default)]
+    pub pending: Vec<ScheduledEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorldStateSnapshot {
+    pub tick: u64,
+    pub weather: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EconomyLedgerSnapshot {
+    #[serde(default)]
+    pub accounts: BTreeMap<String, AccountBalance>,
+    #[serde(default)]
+    pub transfers: Vec<AccountingTransfer>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1093,6 +1732,58 @@ pub struct AiProposal {
     pub proposal_type: String,
     pub proposal_payload: Value,
     pub confidence: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_config_round_trip_serialization_preserves_values() {
+        for seed in [1_u64, 7, 1337, 42_4242] {
+            let mut cfg = RunConfig::default();
+            cfg.seed = seed;
+            cfg.run_id = format!("run_{seed}");
+            cfg.idle_threshold += (seed % 9) as i64;
+            cfg.max_reaction_depth = (seed % 7) as u8 + 1;
+            cfg.rumor_distortion_bps = 900 + (seed % 700) as u16;
+            cfg.enabled_systems
+                .insert("agency".to_string(), seed % 2 == 0);
+            cfg.scenario_flags
+                .insert("famine".to_string(), seed % 3 == 0);
+
+            let json = serde_json::to_string(&cfg).expect("serialize config");
+            let decoded: RunConfig = serde_json::from_str(&json).expect("deserialize config");
+            assert_eq!(cfg, decoded);
+        }
+    }
+
+    #[test]
+    fn default_configuration_has_non_zero_core_parameters() {
+        let cfg = RunConfig::default();
+
+        assert!(cfg.planning_beam_width > 0);
+        assert!(cfg.planning_horizon > 0);
+        assert!(cfg.scheduling_window_size > 0);
+        assert!(cfg.rent_period_ticks > 0);
+        assert!(cfg.wage_period_ticks_daily > 0);
+        assert!(cfg.wage_period_ticks_weekly > 0);
+        assert!(cfg.production_rate_ticks > 0);
+        assert!(cfg.spoilage_rate_ticks > 0);
+        assert!(cfg.market_clearing_frequency_ticks > 0);
+        assert!(cfg.group_cohesion_threshold > 0);
+        assert!(cfg.rumor_distortion_bps > 0);
+        assert!(cfg.relationship_positive_trust_delta > 0);
+        assert!(cfg.relationship_negative_trust_delta > 0);
+        assert!(cfg.relationship_grievance_delta > 0);
+        assert!(!cfg.drive_decay_rates.is_empty());
+        assert!(!cfg.drive_urgency_thresholds.is_empty());
+        assert!(cfg.drive_decay_rates.values().all(|value| *value > 0));
+        assert!(cfg
+            .drive_urgency_thresholds
+            .values()
+            .all(|value| *value > 0));
+    }
 }
 
 pub mod serde_u64_string {

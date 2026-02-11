@@ -812,6 +812,16 @@ async fn get_npc_inspector(
         let inner = state.inner.lock().await;
         let engine = require_run(&inner, &run_id)?;
 
+        if let Some(data) = engine.inspect_npc(&npc_id) {
+            return Ok(Json(QueryResponse {
+                schema_version: SCHEMA_VERSION_V1.to_string(),
+                query_type: "npc.inspect".to_string(),
+                run_id: run_id.clone(),
+                generated_at_tick: engine.status().current_tick,
+                data,
+            }));
+        }
+
         let snapshot = engine.snapshot_for_current_tick();
         let npc_events = engine
             .events()
@@ -1162,6 +1172,16 @@ async fn get_settlement_inspector(
     let response = {
         let inner = state.inner.lock().await;
         let engine = require_run(&inner, &run_id)?;
+
+        if let Some(data) = engine.inspect_settlement(&settlement_id) {
+            return Ok(Json(QueryResponse {
+                schema_version: SCHEMA_VERSION_V1.to_string(),
+                query_type: "settlement.inspect".to_string(),
+                run_id: run_id.clone(),
+                generated_at_tick: engine.status().current_tick,
+                data,
+            }));
+        }
 
         let snapshot = engine.snapshot_for_current_tick();
         let current_tick = engine.status().current_tick;

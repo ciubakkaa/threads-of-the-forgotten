@@ -1,5 +1,20 @@
 //! Deterministic phase executor and command queue with minimal NPC intent/action commits.
 
+pub mod agent;
+pub mod drive;
+pub mod economy;
+pub mod institution;
+pub mod memory;
+pub mod operator;
+pub mod perception;
+pub mod planner;
+pub mod scheduler;
+pub mod social;
+pub mod spatial;
+pub mod world;
+
+pub use world::AgentWorld;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1316,6 +1331,10 @@ impl Kernel {
                 "wanted_npc_count": self.wanted_npcs.len(),
                 "social_cohesion": self.social_cohesion,
             })),
+            agents: Vec::new(),
+            scheduler_state: None,
+            world_state_v2: None,
+            economy_ledger_v2: None,
         }
     }
 
@@ -2390,10 +2409,9 @@ impl Kernel {
                 .iter()
                 .any(|intent| intent == "stabilize_security")
         {
-            if let Some((steal_score, steal_candidate)) = ranked
-                .iter()
-                .find(|(_, candidate)| canonical_action_name(candidate.action.as_str()) == "steal_supplies")
-            {
+            if let Some((steal_score, steal_candidate)) = ranked.iter().find(|(_, candidate)| {
+                canonical_action_name(candidate.action.as_str()) == "steal_supplies"
+            }) {
                 let roll = self.deterministic_stream(
                     tick,
                     Phase::ActionResolution,
@@ -2631,10 +2649,8 @@ impl Kernel {
             }
         }
 
-        if matches!(
-            action,
-            "craft_goods" | "tend_fields" | "work_for_coin"
-        ) && social_window
+        if matches!(action, "craft_goods" | "tend_fields" | "work_for_coin")
+            && social_window
             && !economic_urgent
             && !hunger_urgent
             && !shelter_urgent
@@ -2669,9 +2685,7 @@ impl Kernel {
             {
                 score += 700;
             }
-            if (16..=20).contains(&day_phase)
-                && matches!(action, "craft_goods" | "tend_fields")
-            {
+            if (16..=20).contains(&day_phase) && matches!(action, "craft_goods" | "tend_fields") {
                 score -= 520;
             }
         }
@@ -8828,7 +8842,9 @@ impl Kernel {
                                         details
                                             .get("canonical_action")
                                             .and_then(Value::as_str)
-                                            .or_else(|| details.get("chosen_action").and_then(Value::as_str))
+                                            .or_else(|| {
+                                                details.get("chosen_action").and_then(Value::as_str)
+                                            })
                                     })
                                     .map(canonical_action_name),
                                 Some("form_mutual_aid_group" | "share_meal" | "mediate_dispute")
@@ -8854,7 +8870,9 @@ impl Kernel {
                                         details
                                             .get("canonical_action")
                                             .and_then(Value::as_str)
-                                            .or_else(|| details.get("chosen_action").and_then(Value::as_str))
+                                            .or_else(|| {
+                                                details.get("chosen_action").and_then(Value::as_str)
+                                            })
                                     })
                                     .map(canonical_action_name),
                                 Some(
@@ -9058,7 +9076,9 @@ impl Kernel {
                                     details
                                         .get("canonical_action")
                                         .and_then(Value::as_str)
-                                        .or_else(|| details.get("chosen_action").and_then(Value::as_str))
+                                        .or_else(|| {
+                                            details.get("chosen_action").and_then(Value::as_str)
+                                        })
                                 })
                                 .map(canonical_action_name),
                             Some(
@@ -10358,14 +10378,12 @@ impl Kernel {
                     });
                 }
 
-                let challenge_weight = (profile.aggression / 2
-                    + profile.ambition / 3
-                    + grievance.max(0)
-                    + salience
-                    - profile.patience / 3
-                    - fear.max(0) / 2
-                    - trust.max(0) / 3)
-                    .clamp(0, 96);
+                let challenge_weight =
+                    (profile.aggression / 2 + profile.ambition / 3 + grievance.max(0) + salience
+                        - profile.patience / 3
+                        - fear.max(0) / 2
+                        - trust.max(0) / 3)
+                        .clamp(0, 96);
                 if challenge_weight >= 22 {
                     candidates.push(SocialReactionCandidate {
                         reaction_key: "status_challenge",
@@ -12542,7 +12560,10 @@ fn occupancy_state_tag(occupancy: NpcOccupancyKind) -> &'static str {
 }
 
 fn canonical_action_name(action: &str) -> &str {
-    action.split_once("::").map(|(base, _)| base).unwrap_or(action)
+    action
+        .split_once("::")
+        .map(|(base, _)| base)
+        .unwrap_or(action)
 }
 
 fn action_variant_name(action: &str) -> Option<&str> {
@@ -12622,7 +12643,7 @@ fn build_opportunities_from_candidates(
     });
     let theft_edge_open = theft_pressure_active
         && law_case_load <= 4
-                && ((rent_shortfall > 0 && rent_due_in_ticks <= 48)
+        && ((rent_shortfall > 0 && rent_due_in_ticks <= 48)
             || decision.top_pressures.iter().any(|pressure| {
                 matches!(
                     pressure.as_str(),
@@ -12650,7 +12671,8 @@ fn build_opportunities_from_candidates(
 
     if selected.len() < 4 {
         for candidate in ranked {
-            if selected_actions.insert(canonical_action_name(candidate.action.as_str()).to_string()) {
+            if selected_actions.insert(canonical_action_name(candidate.action.as_str()).to_string())
+            {
                 selected.push(candidate);
             }
             if selected.len() >= 4 {
@@ -13788,12 +13810,7 @@ fn apply_contextual_action_variants<F>(
         "request_courtship",
         "offer_token",
     ];
-    const THEFT_VARIANTS: &[&str] = &[
-        "lift_purse",
-        "snatch_loaf",
-        "break_storage",
-        "pick_pocket",
-    ];
+    const THEFT_VARIANTS: &[&str] = &["lift_purse", "snatch_loaf", "break_storage", "pick_pocket"];
     const OBSERVE_VARIANTS: &[&str] = &[
         "watch_street",
         "notice_stranger",
@@ -13809,9 +13826,12 @@ fn apply_contextual_action_variants<F>(
         "negotiate_cot",
     ];
 
-    let has_social_intent = top_intents
-        .iter()
-        .any(|intent| matches!(intent.as_str(), "build_trust" | "seek_companionship" | "exchange_stories"));
+    let has_social_intent = top_intents.iter().any(|intent| {
+        matches!(
+            intent.as_str(),
+            "build_trust" | "seek_companionship" | "exchange_stories"
+        )
+    });
     let scarcity_pressure = pressure_index >= 120 || harvest_shock >= 2 || winter_severity >= 60;
     let day_phase = tick % 24;
 
