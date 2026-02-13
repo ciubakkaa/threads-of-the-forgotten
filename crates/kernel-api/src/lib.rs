@@ -1,4 +1,4 @@
-//! In-process API facade with command validation, deterministic queueing, and SQLite persistence.
+//! In-process API facade with command validation and SQLite persistence.
 
 mod persistence;
 mod server;
@@ -9,7 +9,7 @@ use contracts::{
     ApiError, Command, CommandPayload, CommandResult, CommandType, ErrorCode, Event, ReasonPacket,
     RunConfig, RunStatus, Snapshot, SCHEMA_VERSION_V1,
 };
-use kernel_core::AgentWorld;
+use kernel_core::{AgentWorld, StepMetrics};
 use persistence::SqliteRunStore;
 pub use persistence::{PersistedCommandEntry, PersistedRunSummary, PersistenceError, ReplaySlice};
 use serde_json::Value;
@@ -31,6 +31,7 @@ pub struct EngineApi {
     command_log: Vec<PersistedCommandEntry>,
     persistence: Option<PersistenceState>,
     last_persistence_error: Option<String>,
+    last_step_metrics: StepMetrics,
 }
 
 impl EngineApi {
@@ -41,6 +42,7 @@ impl EngineApi {
             command_log: Vec::new(),
             persistence: None,
             last_persistence_error: None,
+            last_step_metrics: StepMetrics::default(),
         }
     }
 
@@ -196,27 +198,77 @@ impl EngineApi {
     }
 
     pub fn step(&mut self, steps: u64) -> (&RunStatus, u64) {
+        let starting_tick = self.kernel.status().current_tick;
         let mut committed = 0_u64;
+        let mut processed_agents = 0_u64;
+        let mut processed_batch_tick = self.kernel.status().current_tick;
+        let cadence = self.kernel.config().snapshot_every_ticks.max(1);
         for _ in 0..steps.max(1) {
             if !self.kernel.step() {
                 break;
             }
             committed += 1;
+            let metrics = self.kernel.last_step_metrics();
+            processed_agents = processed_agents.saturating_add(metrics.processed_agents);
+            processed_batch_tick = metrics.processed_batch_tick;
+            let current_tick = self.kernel.status().current_tick;
+            let on_cadence_boundary = current_tick > 0 && current_tick % cadence == 0;
+            if on_cadence_boundary || self.kernel.status().is_complete() {
+                self.flush_persistence_if_enabled();
+            }
+        }
+        self.last_step_metrics = StepMetrics {
+            advanced_ticks: self
+                .kernel
+                .status()
+                .current_tick
+                .saturating_sub(starting_tick),
+            processed_batch_tick,
+            processed_agents,
+        };
+        if committed > 0 {
             self.flush_persistence_if_enabled();
         }
         (self.kernel.status(), committed)
     }
 
     pub fn run_to_tick(&mut self, tick: u64) -> (&RunStatus, u64) {
+        let starting_tick = self.kernel.status().current_tick;
         let mut committed = 0_u64;
+        let mut processed_agents = 0_u64;
+        let mut processed_batch_tick = self.kernel.status().current_tick;
+        let cadence = self.kernel.config().snapshot_every_ticks.max(1);
         while self.kernel.status().current_tick < tick {
             if !self.kernel.step() {
                 break;
             }
             committed += 1;
+            let metrics = self.kernel.last_step_metrics();
+            processed_agents = processed_agents.saturating_add(metrics.processed_agents);
+            processed_batch_tick = metrics.processed_batch_tick;
+            let current_tick = self.kernel.status().current_tick;
+            let on_cadence_boundary = current_tick > 0 && current_tick % cadence == 0;
+            if on_cadence_boundary || self.kernel.status().is_complete() {
+                self.flush_persistence_if_enabled();
+            }
+        }
+        self.last_step_metrics = StepMetrics {
+            advanced_ticks: self
+                .kernel
+                .status()
+                .current_tick
+                .saturating_sub(starting_tick),
+            processed_batch_tick,
+            processed_agents,
+        };
+        if committed > 0 {
             self.flush_persistence_if_enabled();
         }
         (self.kernel.status(), committed)
+    }
+
+    pub fn last_step_metrics(&self) -> StepMetrics {
+        self.last_step_metrics
     }
 
     pub fn submit_command(
@@ -273,6 +325,14 @@ impl EngineApi {
         self.kernel.inspect_settlement(settlement_id)
     }
 
+    pub fn inspect_npc_arc_summary(&self, npc_id: &str) -> Option<Value> {
+        self.kernel.inspect_npc_arc_summary(npc_id)
+    }
+
+    pub fn inspect_npc_storyline(&self, npc_id: &str) -> Option<Value> {
+        self.kernel.inspect_npc_storyline(npc_id)
+    }
+
     fn flush_persistence_if_enabled(&mut self) {
         if self.persistence.is_none() {
             return;
@@ -312,10 +372,13 @@ impl EngineApi {
         }
 
         match &command.payload {
-            CommandPayload::SimStepTick { steps } if *steps == 0 => {
+            CommandPayload::SimStart
+            | CommandPayload::SimPause
+            | CommandPayload::SimStepTick { .. }
+            | CommandPayload::SimRunToTick { .. } => {
                 return Some(ApiError::new(
                     ErrorCode::InvalidCommand,
-                    "sim.step_tick requires steps >= 1",
+                    "sim control commands must use /start, /pause, /step, /run_to_tick endpoints",
                     None,
                 ))
             }
@@ -402,7 +465,8 @@ mod tests {
         let (_, committed) = api.step(3);
 
         assert_eq!(committed, 3);
-        assert_eq!(api.status().current_tick, 3);
+        assert!(api.status().current_tick >= 1);
+        assert!(api.status().current_tick <= 3);
     }
 
     #[test]
@@ -477,5 +541,62 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(db_path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(db_path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn step_populates_last_step_metrics() {
+        let mut api = EngineApi::from_config(test_config());
+        let (_, committed) = api.step(5);
+        assert_eq!(committed, 5);
+
+        let metrics = api.last_step_metrics();
+        assert!(metrics.processed_agents > 0);
+        assert!(metrics.advanced_ticks <= 5);
+        assert!(metrics.processed_batch_tick >= api.status().current_tick.saturating_sub(1));
+    }
+
+    #[test]
+    fn sim_control_commands_are_rejected_via_submit_command() {
+        let cfg = test_config();
+        let run_id = cfg.run_id.clone();
+        let mut api = EngineApi::from_config(cfg);
+        let command = Command::new(
+            "cmd_sim_step",
+            run_id,
+            2,
+            CommandType::SimStepTick,
+            CommandPayload::SimStepTick { steps: 1 },
+        );
+
+        let result = api.submit_command(command, Some(2));
+        assert!(!result.accepted);
+        let message = result
+            .error
+            .as_ref()
+            .map(|err| err.message.clone())
+            .unwrap_or_default();
+        assert!(message.contains("/step"));
+    }
+
+    #[test]
+    fn step_window_batching_processes_scheduler_windows_even_if_tick_delta_is_smaller() {
+        let mut cfg = test_config();
+        cfg.duration_days = 30;
+        cfg.npc_count_min = 4;
+        cfg.npc_count_max = 4;
+
+        let mut api = EngineApi::from_config(cfg);
+        let before = api.status().current_tick;
+        let (status, committed) = api.step(96);
+        let after = status.current_tick;
+        let metrics = api.last_step_metrics();
+
+        assert!(committed > 0, "expected committed windows > 0");
+        assert!(after >= before, "tick should be monotonic");
+        assert!(
+            committed >= metrics.advanced_ticks,
+            "window count can exceed tick delta"
+        );
+        assert!(metrics.processed_agents > 0);
     }
 }

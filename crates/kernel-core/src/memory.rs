@@ -58,6 +58,7 @@ impl MemorySystem {
 pub struct BeliefModel {
     pub claims: Vec<BeliefClaim>,
     pub uncertainty_threshold: i64,
+    pub max_claims: usize,
 }
 
 impl BeliefModel {
@@ -65,12 +66,13 @@ impl BeliefModel {
         Self {
             claims: Vec::new(),
             uncertainty_threshold,
+            max_claims: 256,
         }
     }
 
     pub fn update_from_perception(&mut self, perception: &Observation, npc_id: &str, trust: i64) {
         let topic = format!("event:{}", perception.event_id);
-        let content = perception.details.to_string();
+        let content = compact_claim_content(perception.details.to_string());
         self.upsert_claim(
             npc_id,
             topic,
@@ -91,7 +93,7 @@ impl BeliefModel {
         self.upsert_claim(
             npc_id,
             format!("rumor:{}", rumor.rumor_id),
-            rumor.details.clone(),
+            compact_claim_content(rumor.details.clone()),
             tick,
             if source_trust >= 50 {
                 BeliefSource::TrustedRumor
@@ -109,6 +111,10 @@ impl BeliefModel {
             claim.confidence = (claim.confidence - decay).clamp(0, 100);
             claim.uncertain = claim.confidence < self.uncertainty_threshold;
         }
+        // Drop dead beliefs and keep the highest-signal, newest context.
+        self.claims
+            .retain(|claim| claim.confidence > 0 && !(claim.uncertain && claim.confidence <= 3));
+        self.enforce_capacity();
     }
 
     pub fn get_belief(&self, topic: &str) -> Option<&BeliefClaim> {
@@ -151,7 +157,28 @@ impl BeliefModel {
             last_updated_tick: tick,
             uncertain: confidence < self.uncertainty_threshold,
         });
+        self.enforce_capacity();
     }
+
+    fn enforce_capacity(&mut self) {
+        if self.claims.len() <= self.max_claims {
+            return;
+        }
+        self.claims.sort_by(|a, b| {
+            b.confidence
+                .cmp(&a.confidence)
+                .then(b.last_updated_tick.cmp(&a.last_updated_tick))
+        });
+        self.claims.truncate(self.max_claims);
+    }
+}
+
+fn compact_claim_content(mut content: String) -> String {
+    const MAX: usize = 240;
+    if content.len() > MAX {
+        content.truncate(MAX);
+    }
+    content
 }
 
 #[cfg(test)]

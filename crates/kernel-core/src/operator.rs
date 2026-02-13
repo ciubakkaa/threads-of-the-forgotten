@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use contracts::{FactPredicate, OperatorDef, OperatorParams, ParamDef, ParamSchema, ParamType};
+use contracts::{
+    DriveKind, FactPredicate, OperatorDef, OperatorParams, ParamDef, ParamSchema, ParamType,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct PlanningWorldView {
@@ -110,13 +112,13 @@ impl OperatorCatalog {
                     family: family.to_string(),
                     display_name: name.to_string(),
                     param_schema: default_schema_for(name),
-                    duration_ticks: if name == "travel" { 2 } else { 1 },
+                    duration_ticks: default_duration_ticks(family, name),
                     risk: if family == "illicit" { 65 } else { 20 },
                     visibility: if family == "illicit" { 70 } else { 40 },
                     preconditions: Vec::new(),
                     effects: Vec::new(),
-                    drive_effects: Vec::new(),
-                    capability_requirements: Vec::new(),
+                    drive_effects: default_drive_effects(family, name),
+                    capability_requirements: default_capability_requirements(family, name),
                 });
             }
         }
@@ -159,6 +161,12 @@ impl OperatorCatalog {
             .preconditions
             .iter()
             .all(|predicate| predicate_holds(predicate, world))
+    }
+
+    pub fn operator_by_id(&self, operator_id: &str) -> Option<&OperatorDef> {
+        self.by_id
+            .get(operator_id)
+            .and_then(|index| self.operators.get(*index))
     }
 }
 
@@ -221,10 +229,7 @@ fn default_schema_for(name: &str) -> ParamSchema {
 
     if name == "eat" {
         return ParamSchema {
-            required: vec![ParamDef {
-                name: "resource_type".to_string(),
-                param_type: ParamType::ResourceType,
-            }],
+            required: Vec::new(),
             optional: Vec::new(),
         };
     }
@@ -274,6 +279,74 @@ fn default_schema_for(name: &str) -> ParamSchema {
     }
 }
 
+fn default_drive_effects(family: &str, name: &str) -> Vec<(DriveKind, i64)> {
+    match (family, name) {
+        ("livelihood", "work") | ("livelihood", "trade") | ("livelihood", "barter") => {
+            vec![(DriveKind::Income, 16)]
+        }
+        ("livelihood", "harvest") => vec![(DriveKind::Food, 12), (DriveKind::Income, 6)],
+        ("livelihood", "craft") => vec![(DriveKind::Income, 10), (DriveKind::Status, 6)],
+        ("household", "eat") | ("household", "cook") => vec![(DriveKind::Food, 20)],
+        ("household", "sleep") => vec![(DriveKind::Health, 14)],
+        ("household", "repair") => vec![(DriveKind::Shelter, 14)],
+        ("social", "greet") | ("social", "confide") | ("social", "console") => {
+            vec![(DriveKind::Belonging, 12)]
+        }
+        ("social", "court") | ("social", "propose_alliance") => {
+            vec![(DriveKind::Belonging, 8), (DriveKind::Status, 8)]
+        }
+        ("social", "flatter") => vec![(DriveKind::Status, 10)],
+        ("information", "investigate") | ("information", "observe") => {
+            vec![(DriveKind::Safety, 8)]
+        }
+        ("security", "patrol") | ("security", "guard") | ("security", "lock") => {
+            vec![(DriveKind::Safety, 14)]
+        }
+        ("health", "rest") | ("health", "treat_wound") | ("health", "seek_healer") => {
+            vec![(DriveKind::Health, 16)]
+        }
+        ("mobility", "travel") => vec![(DriveKind::Income, 4), (DriveKind::Belonging, 4)],
+        ("illicit", "steal")
+        | ("illicit", "smuggle")
+        | ("illicit", "extort")
+        | ("illicit", "fence") => vec![(DriveKind::Income, 18), (DriveKind::Food, 8)],
+        ("governance", "petition") | ("governance", "vote") => {
+            vec![(DriveKind::Status, 8), (DriveKind::Safety, 4)]
+        }
+        ("leisure", "drink") => vec![(DriveKind::Health, 8), (DriveKind::Belonging, 6)],
+        ("leisure", "gamble") => vec![(DriveKind::Status, 6), (DriveKind::Belonging, 4)],
+        ("leisure", "perform") => vec![(DriveKind::Status, 8), (DriveKind::Belonging, 5)],
+        ("leisure", "attend_event") => vec![(DriveKind::Belonging, 8), (DriveKind::Status, 4)],
+        ("leisure", "pray") => vec![(DriveKind::Health, 6), (DriveKind::Safety, 5)],
+        ("leisure", "socialize") => vec![(DriveKind::Belonging, 10), (DriveKind::Health, 5)],
+        _ => Vec::new(),
+    }
+}
+
+fn default_duration_ticks(family: &str, name: &str) -> u64 {
+    match (family, name) {
+        ("mobility", _) => 2,
+        ("security", "patrol") | ("security", "guard") => 2,
+        ("livelihood", "harvest") | ("livelihood", "craft") | ("livelihood", "work") => 1,
+        ("household", "sleep") => 2,
+        _ => 0,
+    }
+}
+
+fn default_capability_requirements(family: &str, name: &str) -> Vec<(String, i64)> {
+    match (family, name) {
+        ("livelihood", "work") | ("livelihood", "harvest") => vec![("physical".to_string(), 35)],
+        ("livelihood", "trade") | ("livelihood", "barter") => vec![("trade".to_string(), 30)],
+        ("social", _) => vec![("social".to_string(), 25)],
+        ("information", "read") | ("information", "teach") => vec![("literacy".to_string(), 30)],
+        ("security", "fight") | ("security", "patrol") => vec![("combat".to_string(), 35)],
+        ("health", "treat_wound") | ("health", "seek_healer") => vec![("care".to_string(), 30)],
+        ("illicit", "steal") | ("illicit", "smuggle") => vec![("stealth".to_string(), 30)],
+        ("governance", _) => vec![("law".to_string(), 20), ("influence".to_string(), 20)],
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone)]
 enum ParamValue {
     Text(String),
@@ -282,13 +355,46 @@ enum ParamValue {
 
 fn values_for_param(def: &ParamDef, world: &PlanningWorldView) -> Vec<ParamValue> {
     match &def.param_type {
-        ParamType::NpcId => world
-            .npc_ids
-            .iter()
-            .take(8)
-            .cloned()
-            .map(ParamValue::Text)
-            .collect(),
+        ParamType::NpcId => {
+            let actor_id = world.facts.get("agent.id").cloned().unwrap_or_default();
+            let actor_location = world.facts.get("agent.location").cloned();
+            let tick = world
+                .facts
+                .get("agent.current_tick")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut ranked = world
+                .npc_ids
+                .iter()
+                .map(|npc_id| {
+                    let same_location = actor_location
+                        .as_ref()
+                        .and_then(|location| {
+                            world.facts.get(&format!("npc.location:{npc_id}")).map(|other| {
+                                if other == location {
+                                    1_000_i64
+                                } else {
+                                    0_i64
+                                }
+                            })
+                        })
+                        .unwrap_or(0);
+                    let trust = world
+                        .facts
+                        .get(&format!("social.trust:{actor_id}:{npc_id}"))
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    let jitter = (stable_param_hash(&actor_id, npc_id, tick) % 17) as i64 - 8;
+                    (npc_id.clone(), same_location + trust * 2 + jitter)
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            ranked
+                .into_iter()
+                .take(12)
+                .map(|(npc_id, _)| ParamValue::Text(npc_id))
+                .collect()
+        }
         ParamType::LocationId => world
             .location_ids
             .iter()
@@ -296,13 +402,28 @@ fn values_for_param(def: &ParamDef, world: &PlanningWorldView) -> Vec<ParamValue
             .cloned()
             .map(ParamValue::Text)
             .collect(),
-        ParamType::ObjectId => world
-            .object_ids
-            .iter()
-            .take(8)
-            .cloned()
-            .map(ParamValue::Text)
-            .collect(),
+        ParamType::ObjectId => {
+            let actor_id = world.facts.get("agent.id").cloned().unwrap_or_default();
+            let tick = world
+                .facts
+                .get("agent.current_tick")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut ranked = world
+                .object_ids
+                .iter()
+                .map(|object_id| {
+                    let score = stable_param_hash(&actor_id, object_id, tick) as i64;
+                    (object_id.clone(), score)
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            ranked
+                .into_iter()
+                .take(8)
+                .map(|(object_id, _)| ParamValue::Text(object_id))
+                .collect::<Vec<_>>()
+        }
         ParamType::InstitutionId => world
             .institution_ids
             .iter()
@@ -344,6 +465,15 @@ fn set_param(bound: &mut OperatorParams, name: &str, value: ParamValue) {
         ("context", ParamValue::Text(v)) => bound.context = Some(v),
         _ => {}
     }
+}
+
+fn stable_param_hash(actor_id: &str, npc_id: &str, tick: u64) -> u64 {
+    let mut hash = tick.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for byte in actor_id.as_bytes().iter().chain(npc_id.as_bytes()) {
+        hash = hash.rotate_left(7) ^ u64::from(*byte);
+        hash = hash.wrapping_mul(0x517C_C1B7_2722_0A95);
+    }
+    hash
 }
 
 fn predicate_holds(predicate: &FactPredicate, world: &PlanningWorldView) -> bool {

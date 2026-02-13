@@ -74,6 +74,21 @@ impl AgentScheduler {
         })
     }
 
+    pub fn pop_batch_at_tick(&mut self, tick: u64) -> Vec<ScheduledEvent> {
+        let mut batch = Vec::new();
+        while let Some(next_tick) = self.peek_next_tick() {
+            if next_tick != tick {
+                break;
+            }
+            if let Some(event) = self.pop_next() {
+                batch.push(event);
+            } else {
+                break;
+            }
+        }
+        batch
+    }
+
     pub fn current_tick(&self) -> u64 {
         self.current_tick
     }
@@ -100,6 +115,12 @@ impl AgentScheduler {
                 reason: entry.0.reason,
             })
             .collect()
+    }
+
+    pub fn has_scheduled(&self, agent_id: &str, wake_tick: u64) -> bool {
+        self.event_queue
+            .iter()
+            .any(|entry| entry.0.agent_id == agent_id && entry.0.wake_tick == wake_tick)
     }
 
     pub fn priority_for(&self, tick: u64, agent_id: &str) -> u64 {
@@ -235,5 +256,18 @@ mod tests {
 
         let rejected = resolver.try_commit(&losing, 10);
         assert!(rejected.is_err());
+    }
+
+    #[test]
+    fn pop_batch_returns_all_events_for_same_tick() {
+        let mut scheduler = AgentScheduler::new(7);
+        scheduler.schedule_next("npc:1", 3, WakeReason::Idle);
+        scheduler.schedule_next("npc:2", 3, WakeReason::Reactive);
+        scheduler.schedule_next("npc:3", 5, WakeReason::Idle);
+
+        let batch = scheduler.pop_batch_at_tick(3);
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().all(|event| event.wake_tick == 3));
+        assert_eq!(scheduler.peek_next_tick(), Some(5));
     }
 }

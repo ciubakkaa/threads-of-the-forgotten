@@ -61,26 +61,28 @@ impl SocialGraph {
             return Some(0);
         }
 
-        let mut visited = BTreeSet::new();
+        self.bfs_distances(from).get(to).copied()
+    }
+
+    fn bfs_distances(&self, from: &str) -> BTreeMap<String, u32> {
+        let mut distances = BTreeMap::<String, u32>::new();
         let mut queue = VecDeque::new();
         queue.push_back((from.to_string(), 0_u32));
 
         while let Some((node, depth)) = queue.pop_front() {
-            if !visited.insert(node.clone()) {
+            if distances.contains_key(&node) {
                 continue;
             }
+            distances.insert(node.clone(), depth);
 
             for (neighbor, _) in self.neighbors(&node) {
-                if neighbor == to {
-                    return Some(depth + 1);
-                }
-                if !visited.contains(neighbor) {
+                if !distances.contains_key(neighbor) {
                     queue.push_back((neighbor.to_string(), depth + 1));
                 }
             }
         }
 
-        None
+        distances
     }
 }
 
@@ -106,12 +108,15 @@ impl RumorNetwork {
 }
 
 impl RumorNetwork {
+    const MAX_PROPAGATION_FANOUT: usize = 8;
+
     pub fn propagate(
         &self,
         rumor: &RumorPayload,
         source_id: &str,
         graph: &SocialGraph,
     ) -> Vec<(String, RumorPayload)> {
+        let distances = graph.bfs_distances(source_id);
         let mut targets = graph
             .edges
             .keys()
@@ -120,7 +125,7 @@ impl RumorNetwork {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|target_npc| {
-                let distance = graph.social_distance(source_id, &target_npc)?;
+                let distance = distances.get(&target_npc).copied()?;
                 let trust = graph
                     .get_edge(source_id, &target_npc)
                     .map(|edge| edge.trust)
@@ -131,7 +136,9 @@ impl RumorNetwork {
         targets.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
 
         let mut out = Vec::new();
-        for (target_npc, trust_i64, distance) in targets {
+        for (target_npc, trust_i64, distance) in
+            targets.into_iter().take(Self::MAX_PROPAGATION_FANOUT)
+        {
             let trust = trust_i64.max(0) as u32;
             let hop = rumor.hop_count + distance;
             let mut details = rumor.details.clone();

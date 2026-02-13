@@ -6,6 +6,16 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod api;
+pub mod commands;
+pub mod config;
+pub mod economy;
+pub mod events;
+pub mod planning;
+pub mod scheduler;
+pub mod serde_u64_string;
+pub mod snapshot;
+
 pub const SCHEMA_VERSION_V1: &str = "1.0";
 pub const TICKS_PER_DAY: u64 = 24;
 
@@ -42,10 +52,14 @@ pub struct RunConfig {
     pub planning_beam_width: u16,
     #[serde(default = "default_planning_horizon")]
     pub planning_horizon: u8,
+    #[serde(default = "default_planner_worker_threads")]
+    pub planner_worker_threads: u16,
     #[serde(default = "default_idle_threshold")]
     pub idle_threshold: i64,
     #[serde(default = "default_max_reaction_depth")]
     pub max_reaction_depth: u8,
+    #[serde(default = "default_max_same_tick_rounds")]
+    pub max_same_tick_rounds: u8,
     #[serde(default = "default_scheduling_window_size")]
     pub scheduling_window_size: u64,
     #[serde(default = "default_drive_decay_rates")]
@@ -110,8 +124,10 @@ impl Default for RunConfig {
             scenario_flags: BTreeMap::new(),
             planning_beam_width: default_planning_beam_width(),
             planning_horizon: default_planning_horizon(),
+            planner_worker_threads: default_planner_worker_threads(),
             idle_threshold: default_idle_threshold(),
             max_reaction_depth: default_max_reaction_depth(),
+            max_same_tick_rounds: default_max_same_tick_rounds(),
             scheduling_window_size: default_scheduling_window_size(),
             drive_decay_rates: default_drive_decay_rates(),
             drive_urgency_thresholds: default_drive_urgency_thresholds(),
@@ -148,12 +164,24 @@ fn default_planning_horizon() -> u8 {
     4
 }
 
+fn default_planner_worker_threads() -> u16 {
+    let available = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let workers = available.saturating_sub(1).max(1);
+    workers.min(u16::MAX as usize) as u16
+}
+
 fn default_idle_threshold() -> i64 {
     10
 }
 
 fn default_max_reaction_depth() -> u8 {
     4
+}
+
+fn default_max_same_tick_rounds() -> u8 {
+    8
 }
 
 fn default_scheduling_window_size() -> u64 {
@@ -1764,7 +1792,9 @@ mod tests {
 
         assert!(cfg.planning_beam_width > 0);
         assert!(cfg.planning_horizon > 0);
+        assert!(cfg.planner_worker_threads > 0);
         assert!(cfg.scheduling_window_size > 0);
+        assert!(cfg.max_same_tick_rounds > 0);
         assert!(cfg.rent_period_ticks > 0);
         assert!(cfg.wage_period_ticks_daily > 0);
         assert!(cfg.wage_period_ticks_weekly > 0);
@@ -1783,25 +1813,5 @@ mod tests {
             .drive_urgency_thresholds
             .values()
             .all(|value| *value > 0));
-    }
-}
-
-pub mod serde_u64_string {
-    use serde::de::Error;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        raw.parse::<u64>().map_err(D::Error::custom)
     }
 }

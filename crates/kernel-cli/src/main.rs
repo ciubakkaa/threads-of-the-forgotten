@@ -18,7 +18,7 @@ fn print_usage() {
     println!(
         "  simulate <run_id> <seed> [ticks] [sqlite_path] [--ticks N] [--db PATH] [--npc-count N|--npc-min N --npc-max N]"
     );
-    println!("    runs deterministic simulation to target tick and persists to sqlite");
+    println!("    runs simulation to target tick and persists to sqlite");
 }
 
 fn parse_u64(value: Option<&String>, label: &str) -> Result<u64, String> {
